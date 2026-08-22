@@ -153,10 +153,23 @@ function saveItinerary(payload) {
 }
 
 export default function App() {
-  // Restore the last auto-saved itinerary once. The lazy ref means both state
-  // initializers and the "restored" notice read the exact same snapshot.
-  // Guard the localStorage restore + autosave when logged in (DB is the source
-  // of truth for saved journeys; the editor session is a volatile draft).
+  // Session (login) — stored in localStorage so a refresh doesn't log out.
+  const [session, setSession] = useState(() => {
+    try {
+      const raw = localStorage.getItem(SESSION_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [page, setPage] = useState("library");
+  const [journeys, setJourneys] = useState([]);
+  const [journeyId, setJourneyId] = useState(null);
+  const [journeyTitle, setJourneyTitle] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // Restore the last auto-saved itinerary draft once (only when logged out —
+  // when logged in the DB is the source of truth for saved journeys).
   const savedRef = useRef(null);
   if (savedRef.current === null) savedRef.current = session ? null : loadSavedItinerary();
   const saved = savedRef.current;
@@ -174,21 +187,6 @@ export default function App() {
   const cancelRef = useRef(null); // AbortController for the current parse/geocode run
   const runSeq = useRef(0); // guards against stale async completions
   const repairedRef = useRef(false); // one-shot state-boundary repair on load
-
-  // Session (login) — stored in localStorage so a refresh doesn't log out.
-  const [session, setSession] = useState(() => {
-    try {
-      const raw = localStorage.getItem(SESSION_KEY);
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  });
-  const [page, setPage] = useState("library");
-  const [journeys, setJourneys] = useState([]);
-  const [journeyId, setJourneyId] = useState(null);
-  const [journeyTitle, setJourneyTitle] = useState("");
-  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     fetch("/api/health")
