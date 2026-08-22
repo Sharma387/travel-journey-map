@@ -21,6 +21,7 @@ class UserOut(BaseModel):
     display_name: str
     role: str
     family_id: int | None = None
+    color_hue: int | None = None
     created_at: str | None = None
 
     @classmethod
@@ -31,6 +32,7 @@ class UserOut(BaseModel):
             display_name=user.display_name,
             role=user.role,
             family_id=user.family_id,
+            color_hue=user.color_hue,
             created_at=user.created_at.isoformat() if user.created_at else None,
         )
 
@@ -78,6 +80,7 @@ class UserCreate(BaseModel):
     display_name: str = Field(min_length=1, max_length=120)
     role: str = Field(default="member", pattern="^(admin|member)$")
     family_id: int | None = None
+    color_hue: int | None = None
 
 
 class UserUpdate(BaseModel):
@@ -86,6 +89,7 @@ class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=6, max_length=128)
     family_id: int | None = None
     clear_family: bool = False
+    color_hue: int | None = None
 
 
 # ---------------------------------------------------------------------------

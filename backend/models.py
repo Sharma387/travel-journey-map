@@ -41,6 +41,7 @@ class User(Base):
     family_id: Mapped[int | None] = mapped_column(
         ForeignKey("families.id"), nullable=True
     )
+    color_hue: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     family: Mapped[Family | None] = relationship(

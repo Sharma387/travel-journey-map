@@ -6,6 +6,7 @@ import ControlPanel from "./components/ControlPanel";
 import LoginPage from "./components/LoginPage";
 import JourneyLibrary from "./components/JourneyLibrary";
 import AdminPage from "./components/AdminPage";
+import FamilyMap from "./components/FamilyMap";
 import {
   geocodeStops,
   parseItinerary,
@@ -791,6 +792,18 @@ export default function App() {
           >
             🗺️ Map
           </button>
+          {session.user?.family_id != null && (
+            <button
+              onClick={() => setPage("family")}
+              className={`rounded-md px-2.5 py-1.5 ${
+                page === "family"
+                  ? "bg-teal-50 text-teal-700"
+                  : "text-slate-500 hover:bg-slate-100"
+              }`}
+            >
+              👨‍👩‍👧 Family
+            </button>
+          )}
           {isAdmin && (
             <button
               onClick={() => setPage("admin")}
@@ -833,6 +846,8 @@ export default function App() {
       )}
 
       {page === "admin" && isAdmin && <AdminPage token={session.token} />}
+
+      {page === "family" && <FamilyMap token={session.token} />}
 
       {page === "map" && (
         <main className="flex min-h-0 flex-1 flex-col lg:flex-row">

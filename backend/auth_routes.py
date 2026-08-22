@@ -25,6 +25,14 @@ from security import create_token, get_current_user, hash_password, require_admi
 router = APIRouter(prefix="/api", tags=["auth"])
 
 
+def auto_color_hue(username: str) -> int:
+    """Deterministic golden-angle hue (0-359) from a username."""
+    h = 0
+    for ch in username:
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    return int(((h % 360) * 137.508) % 360)
+
+
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
@@ -56,6 +64,7 @@ def admin_create_user(body: UserCreate, db: Session = Depends(get_db), _: User =
         password_hash=hash_password(body.password),
         role=body.role,
         family_id=body.family_id,
+        color_hue=body.color_hue if body.color_hue is not None else auto_color_hue(body.username),
     )
     db.add(user)
     db.commit()
@@ -91,6 +100,8 @@ def admin_update_user(
         if db.get(Family, body.family_id) is None:
             raise HTTPException(status_code=404, detail="Family not found.")
         user.family_id = body.family_id
+    if body.color_hue is not None:
+        user.color_hue = max(0, min(359, body.color_hue))
     db.commit()
     db.refresh(user)
     return UserOut.from_user(user)

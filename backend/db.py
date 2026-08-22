@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 DB_PATH = Path(__file__).resolve().parent / "app.db"
@@ -41,7 +41,22 @@ def get_db():
 
 
 def init_db() -> None:
-    """Create all tables. Idempotent; safe to call on every startup."""
+    """Create all tables + run light migrations. Idempotent."""
     import models  # ensure models are registered on Base.metadata
 
     Base.metadata.create_all(bind=engine)
+    _migrate()
+
+
+def _migrate() -> None:
+    """Additive column migrations for existing SQLite databases."""
+    with engine.connect() as conn:
+        cols = {
+            row[1]
+            for row in conn.execute(
+                text("SELECT * FROM pragma_table_info('users')")
+            )
+        }
+        if "color_hue" not in cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN color_hue INTEGER"))
+        conn.commit()

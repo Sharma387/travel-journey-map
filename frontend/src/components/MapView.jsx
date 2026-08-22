@@ -12,133 +12,20 @@ import {
 } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-
-const START_CENTER = [20, 10];
-const START_ZOOM = 2;
-
-// Deterministic colors per area name (string hash → hue) so polygons never
-// flicker to a different color on re-render / batch updates. The golden-angle
-// multiplier spreads neighboring hash values into distinct hues, and we return
-// a fill + darker stroke pair for a richer look on the map.
-function areaColors(key) {
-  let h = 0;
-  for (const ch of key) h = (h * 31 + ch.codePointAt(0)) >>> 0;
-  const hue = ((h % 360) * 137.508) % 360;
-  return {
-    fill: `hsl(${hue}, 72%, 55%)`,
-    stroke: `hsl(${hue}, 55%, 30%)`,
-  };
-}
-
-// Deterministic LIGHT pastel per country name. Still clearly visible on the
-// basemap (55% sat / 78% light) but lighter than the state fills so the states
-// stay the hero once the traveller has visited them.
-function countryColors(key) {
-  let h = 0;
-  for (const ch of key) h = (h * 31 + ch.codePointAt(0)) >>> 0;
-  const hue = ((h % 360) * 137.508) % 360;
-  return {
-    fill: `hsl(${hue}, 55%, 78%)`,
-    stroke: `hsl(${hue}, 45%, 64%)`,
-  };
-}
-
-// The whole world gets a subtle shade too, so even unvisited countries are
-// lightly coloured. Visited countries (matched by name) get a slightly deeper
-// tint + stronger border so the journey still stands out.
-function worldColors(key, visited) {
-  let h = 0;
-  for (const ch of key) h = (h * 31 + ch.codePointAt(0)) >>> 0;
-  const hue = ((h % 360) * 137.508) % 360;
-  return visited
-    ? {
-        fill: `hsl(${hue}, 48%, 76%)`,
-        stroke: `hsl(${hue}, 40%, 58%)`,
-      }
-    : {
-        fill: `hsl(${hue}, 35%, 86%)`,
-        stroke: `hsl(${hue}, 25%, 78%)`,
-      };
-}
-
-// Match a stop's country name against a world-feature country name.
-function countryMatches(worldName, stopCountry) {
-  const a = (worldName || "").toLowerCase();
-  const b = (stopCountry || "").toLowerCase();
-  return (
-    a === b ||
-    (b && (a.includes(b) || b.includes(a)))
-  );
-}
-
-// Module-level cache so the world dataset is fetched once per page load.
-let worldDataPromise = null;
-function loadWorldData() {
-  if (!worldDataPromise) {
-    worldDataPromise = fetch("/countries-110m.geojson")
-      .then((r) => {
-        if (!r.ok) throw new Error(`world data ${r.status}`);
-        return r.json();
-      })
-      .catch((err) => {
-        worldDataPromise = null; // allow retry on next mount
-        throw err;
-      });
-  }
-  return worldDataPromise;
-}
-
-// Convert a Nominatim GeoJSON geometry to Leaflet polygon rings. Returns an
-// array of rings, where each ring is an array of [lat, lng] pairs.
-function geoToLatLngs(geojson) {
-  if (!geojson) return [];
-  const flip = (ring) => ring.map(([lng, lat]) => [lat, lng]);
-  if (geojson.type === "Polygon") return [flip(geojson.coordinates[0])];
-  if (geojson.type === "MultiPolygon") {
-    return geojson.coordinates.map((poly) => flip(poly[0]));
-  }
-  return [];
-}
-
-// Leaflet LatLngBounds covering a polygon geometry (state/city/country), or
-// null when there is no usable geometry. Used to zoom to the visited state.
-function geoBounds(geojson) {
-  const rings = geoToLatLngs(geojson);
-  if (!rings.length) return null;
-  return L.latLngBounds(rings.flat());
-}
-
-// Shared canvas renderer keeps hundreds of polygon vertices light on
-// low-end hardware (no SVG DOM nodes per city).
-const canvasRenderer = L.canvas({ padding: 0.5 });
-
-// Split a ring ([lat,lng] points) at antimeridian jumps (|Δlng| > 180°) so a
-// polygon like Russia (which crosses 180°) isn't drawn as a straight line
-// across the whole map.
-function splitRing(ring) {
-  const parts = [];
-  let cur = [];
-  for (let i = 0; i < ring.length; i++) {
-    const p = ring[i];
-    if (cur.length && Math.abs(p[1] - cur[cur.length - 1][1]) > 180) {
-      parts.push(cur);
-      cur = [];
-    }
-    cur.push(p);
-  }
-  if (cur.length) parts.push(cur);
-  return parts;
-}
-
-// Strictly chronological order for the polyline: undated stops sort last.
-function chronologicalSort(list) {
-  return [...list].sort((a, b) => {
-    const da = a.start_date || "9999-12-31";
-    const db = b.start_date || "9999-12-31";
-    if (da !== db) return da < db ? -1 : 1;
-    return (a.order ?? 0) - (b.order ?? 0);
-  });
-}
+import {
+  START_CENTER,
+  START_ZOOM,
+  areaColors,
+  countryColors,
+  worldColors,
+  countryMatches,
+  loadWorldData,
+  geoToLatLngs,
+  geoBounds,
+  canvasRenderer,
+  splitRing,
+  chronologicalSort,
+} from "../mapShared";
 
 function numberedIcon(order, ambiguous) {
   const color = ambiguous ? "#d97706" : "#2563eb";

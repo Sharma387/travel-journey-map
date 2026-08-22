@@ -8,8 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from auth_routes import auto_color_hue
 from db import get_db
-from models import Journey, Stop, User
+from models import Family, Journey, Stop, User
 from schemas import JourneyCreate, JourneyOut
 from security import get_current_user
 
@@ -168,14 +169,62 @@ def list_journeys(
     return [journey_summary(j, _journey_stops(db, j.id)) for j in journeys]
 
 
+@router.get("/journeys/family")
+def family_journeys(
+    db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    """All family members' journeys with their per-user colour (family map)."""
+    if user.family_id is None:
+        raise HTTPException(status_code=404, detail="You are not part of a family yet.")
+    family = db.get(Family, user.family_id)
+    if family is None:
+        raise HTTPException(status_code=404, detail="Family not found.")
+    members = db.scalars(
+        select(User).where(User.family_id == family.id).order_by(User.display_name)
+    ).all()
+    out_members = []
+    for member in members:
+        journeys = db.scalars(
+            select(Journey)
+            .where(Journey.owner_id == member.id)
+            .order_by(Journey.created_at.desc())
+        ).all()
+        out_members.append(
+            {
+                "id": member.id,
+                "username": member.username,
+                "display_name": member.display_name,
+                "color_hue": member.color_hue
+                or auto_color_hue(member.username),
+                "journeys": [
+                    journey_out(j, member.display_name, _journey_stops(db, j.id))
+                    for j in journeys
+                ],
+            }
+        )
+    return {
+        "family": {"id": family.id, "name": family.name},
+        "members": out_members,
+    }
+
+
 @router.get("/journeys/{journey_id}", response_model=JourneyOut)
 def get_journey(
     journey_id: int,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    journey = _get_owned_journey(db, journey_id, user)
-    return journey_out(journey, user.display_name, _journey_stops(db, journey.id))
+    journey = db.get(Journey, journey_id)
+    if journey is None:
+        raise HTTPException(status_code=404, detail="Journey not found.")
+    if journey.owner_id != user.id and (
+        not user.family_id
+        or journey.owner_id
+        not in [u.id for u in db.scalars(select(User).where(User.family_id == user.family_id))]
+    ):
+        raise HTTPException(status_code=403, detail="Not your journey.")
+    owner = db.get(User, journey.owner_id)
+    return journey_out(journey, owner.display_name if owner else "", _journey_stops(db, journey.id))
 
 
 @router.put("/journeys/{journey_id}", response_model=JourneyOut)

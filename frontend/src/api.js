@@ -128,6 +128,10 @@ export async function deleteJourney(id, token) {
   });
 }
 
+export async function fetchFamilyJourneys(token) {
+  return request("/api/journeys/family", { headers: authHeaders(token) });
+}
+
 // ---------------------------------------------------------------------------
 // Admin
 // ---------------------------------------------------------------------------
