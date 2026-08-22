@@ -134,7 +134,11 @@ function MapController({ positioned, flySignal, focus }) {
   const map = useMap();
 
   useEffect(() => {
-    if (!positioned.length) return;
+    if (!positioned.length) {
+      // Nothing on the map (e.g. after "Clear map") — return to the world view.
+      map.setView(START_CENTER, START_ZOOM);
+      return;
+    }
     const latlngs = positioned.map((s) => [s.lat, s.lng]);
     if (latlngs.length === 1) {
       map.setView(latlngs[0], 12);

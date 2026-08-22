@@ -212,9 +212,11 @@ export default function App() {
     }
     setStops([]);
     setSource(null);
+    setView("all");
+    setFlySignal((n) => n + 1); // reset the map to the world view
     setStatus({
       kind: "ready",
-      message: "Saved itinerary cleared — upload or paste to start fresh.",
+      message: "Map cleared — upload or paste an itinerary to start fresh.",
     });
   }, []);
 
@@ -639,6 +641,7 @@ export default function App() {
             view={view}
             onViewChange={setView}
             years={years}
+            onClear={clearSaved}
             onClearSaved={clearSaved}
           />
           <ItineraryTable

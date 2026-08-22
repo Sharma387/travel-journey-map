@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 // Strictly chronological order (matches MapView): undated stops sort last.
 function chronologicalSort(list) {
@@ -34,6 +34,7 @@ export default function ControlPanel({
   onToggleCountries,
   onRecenter,
   onGeocode,
+  onClear,
   flaggedCount,
   busy,
   view,
@@ -46,6 +47,7 @@ export default function ControlPanel({
     [stops],
   );
   const canExport = positioned.length > 0;
+  const [confirmClear, setConfirmClear] = useState(false);
 
   // Trip summary: countries visited, rough distance, date span, category mix.
   const summary = useMemo(() => {
@@ -279,6 +281,25 @@ else map.setView([20,10],2);
         </button>
         <button onClick={exportHtml} disabled={!canExport} className={`col-span-2 ${btnCls}`}>
           ⬇ Export interactive map (HTML)
+        </button>
+        <button
+          onClick={() => {
+            if (!confirmClear) {
+              setConfirmClear(true);
+              setTimeout(() => setConfirmClear(false), 3000);
+              return;
+            }
+            setConfirmClear(false);
+            onClear();
+          }}
+          disabled={!stops.length}
+          className={`col-span-2 ${btnCls} ${
+            confirmClear
+              ? "border-red-400 bg-red-600 text-white hover:bg-red-700"
+              : "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+          }`}
+        >
+          {confirmClear ? "⚠ Click again to clear everything" : "🧹 Clear map"}
         </button>
       </div>
 
