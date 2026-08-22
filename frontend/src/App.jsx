@@ -3,13 +3,26 @@ import UploadPanel from "./components/UploadPanel";
 import ItineraryTable from "./components/ItineraryTable";
 import MapView from "./components/MapView";
 import ControlPanel from "./components/ControlPanel";
-import { geocodeStops, parseItinerary } from "./api";
+import LoginPage from "./components/LoginPage";
+import JourneyLibrary from "./components/JourneyLibrary";
+import AdminPage from "./components/AdminPage";
+import {
+  geocodeStops,
+  parseItinerary,
+  fetchJourneys,
+  fetchJourney,
+  createJourney,
+  updateJourney,
+  deleteJourney,
+} from "./api";
 
 const EMPTY_STATUS = { kind: "idle", message: "" };
 // How many stops to geocode per HTTP request. Smaller batches mean the
 // progress counter and map update more frequently (and nothing blocks on a
 // single giant request when the backend is rate-limited by Nominatim).
 const GEOCODE_BATCH = 10;
+
+const SESSION_KEY = "travel-journey-map:session";
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
@@ -142,8 +155,10 @@ function saveItinerary(payload) {
 export default function App() {
   // Restore the last auto-saved itinerary once. The lazy ref means both state
   // initializers and the "restored" notice read the exact same snapshot.
+  // Guard the localStorage restore + autosave when logged in (DB is the source
+  // of truth for saved journeys; the editor session is a volatile draft).
   const savedRef = useRef(null);
-  if (savedRef.current === null) savedRef.current = loadSavedItinerary();
+  if (savedRef.current === null) savedRef.current = session ? null : loadSavedItinerary();
   const saved = savedRef.current;
 
   const [stops, setStops] = useState(saved?.stops ?? []);
@@ -159,6 +174,21 @@ export default function App() {
   const cancelRef = useRef(null); // AbortController for the current parse/geocode run
   const runSeq = useRef(0); // guards against stale async completions
   const repairedRef = useRef(false); // one-shot state-boundary repair on load
+
+  // Session (login) — stored in localStorage so a refresh doesn't log out.
+  const [session, setSession] = useState(() => {
+    try {
+      const raw = localStorage.getItem(SESSION_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [page, setPage] = useState("library");
+  const [journeys, setJourneys] = useState([]);
+  const [journeyId, setJourneyId] = useState(null);
+  const [journeyTitle, setJourneyTitle] = useState("");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     fetch("/api/health")
@@ -213,18 +243,134 @@ export default function App() {
     setStops([]);
     setSource(null);
     setView("all");
-    setFlySignal((n) => n + 1); // reset the map to the world view
+    setFlySignal((n) => n + 1);
     setStatus({
       kind: "ready",
       message: "Map cleared — upload or paste an itinerary to start fresh.",
     });
   }, []);
 
+  // Log out and go back to the login screen.
+  const logout = useCallback(() => {
+    try {
+      localStorage.removeItem(SESSION_KEY);
+    } catch {}
+    setSession(null);
+    setJourneyId(null);
+    setJourneyTitle("");
+  }, []);
+
+  const handleLogin = useCallback((res) => {
+    const payload = { token: res.access_token, user: res.user };
+    try {
+      localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
+    } catch {}
+    setSession(payload);
+  }, []);
+
+  const handleNewJourney = useCallback(() => {
+    setStops([]);
+    setSource(null);
+    setJourneyId(null);
+    setJourneyTitle("");
+    setView("all");
+    setPage("map");
+    setFlySignal((n) => n + 1);
+  }, []);
+
+  const handleOpenJourney = useCallback(
+    async (id) => {
+      try {
+        const j = await fetchJourney(id, session.token);
+        setStops(j.stops || []);
+        setSource({
+          type: j.source_type || null,
+          engine: j.engine || null,
+          llmUsed: j.llm_used,
+          llmModel: j.llm_model || null,
+        });
+        setJourneyId(j.id);
+        setJourneyTitle(j.title || "");
+        setPage("map");
+        setFlySignal((n) => n + 1);
+        setStatus({ kind: "ready", message: `Loaded journey “${j.title}”.` });
+      } catch (err) {
+        setStatus({ kind: "error", message: err.message || String(err) });
+      }
+    },
+    [session?.token],
+  );
+
+  const handleDeleteJourney = useCallback(
+    async (id) => {
+      try {
+        await deleteJourney(id, session.token);
+        setJourneys((prev) => prev.filter((j) => j.id !== id));
+        if (journeyId === id) {
+          setJourneyId(null);
+          setJourneyTitle("");
+          setStops([]);
+          setSource(null);
+        }
+      } catch (err) {
+        setStatus({ kind: "error", message: err.message || String(err) });
+      }
+    },
+    [session?.token, journeyId],
+  );
+
+  const handleSaveJourney = useCallback(async () => {
+    if (saving || !stops.length) return;
+    setSaving(true);
+    try {
+      const payload = {
+        title: journeyTitle || "My journey",
+        source_type: source?.type ?? null,
+        llm_used: !!source?.llmUsed,
+        llm_model: source?.llmModel ?? null,
+        engine: source?.engine ?? null,
+        stops: stops.map((s) => ({
+          order: s.order,
+          location: s.location || "",
+          exact_location: s.exact_location || "",
+          start_date: s.start_date,
+          end_date: s.end_date,
+          category: s.category,
+          notes: s.notes,
+          lat: s.lat,
+          lng: s.lng,
+          geojson: s.geojson,
+          state_name: s.state_name,
+          state_geojson: s.state_geojson,
+          country_name: s.country_name,
+          country_geojson: s.country_geojson,
+          is_ambiguous: s.is_ambiguous,
+          warning: s.warning,
+          candidates: s.candidates,
+          note: s.note,
+          geocode_error: s.geocode_error,
+        })),
+      };
+      let result;
+      if (journeyId) {
+        result = await updateJourney(journeyId, payload, session.token);
+      } else {
+        result = await createJourney(payload, session.token);
+        setJourneyId(result.id);
+      }
+      // Refresh the journey list.
+      fetchJourneys(session.token).then(setJourneys).catch(() => {});
+      setStatus({ kind: "ready", message: `Journey “${payload.title}” saved.` });
+    } catch (err) {
+      setStatus({ kind: "error", message: err.message || String(err) });
+    } finally {
+      setSaving(false);
+    }
+  }, [stops, source, journeyId, journeyTitle, saving, session?.token]);
+
   const stopWork = useCallback(() => {
     cancelRef.current?.abort();
   }, []);
-
-  // Geocode a stop list in small batches so the UI can show progress and the
   // map/table fill in gradually instead of blocking on one huge request.
   // After all batches, one final request (with coords already cached) re-runs
   // the feasibility/velocity check over the WHOLE list for accurate flags.
@@ -372,6 +518,14 @@ export default function App() {
       if (seq === runSeq.current) cancelRef.current = null;
     }
   }
+
+  // Fetch journey list on login.
+  useEffect(() => {
+    if (!session) return;
+    fetchJourneys(session.token)
+      .then(setJourneys)
+      .catch(() => {});
+  }, [session]);
 
   // Sessions restored from before the state/country coloring features (or
   // saved in "minimal" quota mode) lack state/country polygons, so the map
@@ -601,110 +755,178 @@ export default function App() {
   const flaggedCount = stops.filter((s) => s.is_ambiguous).length;
   const busy = status.kind === "parsing" || status.kind === "geocoding";
 
+  if (!session) {
+    return (
+      <div className="flex h-full flex-col bg-slate-50">
+        <LoginPage onLogin={handleLogin} />
+      </div>
+    );
+  }
+
+  const isAdmin = session.user?.role === "admin";
+
   return (
     <div className="flex h-full flex-col bg-slate-50 text-slate-800">
       {/* Header */}
-      <header className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3">
+      <header className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2.5">
         <div className="flex items-center gap-3">
-          <h1 className="text-lg font-bold tracking-tight">🗺️ Travel Journey Map</h1>
-          <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-medium text-blue-700">
-            local-first
-          </span>
+          <h1 className="text-base font-bold tracking-tight lg:text-lg">🗺️ Travel Journey Map</h1>
         </div>
-        <div className="flex items-center gap-3 text-xs text-slate-500">
-          <HealthBadge health={health} />
+        <nav className="flex items-center gap-1 text-xs font-medium">
+          <button
+            onClick={() => setPage("library")}
+            className={`rounded-md px-2.5 py-1.5 ${
+              page === "library"
+                ? "bg-blue-50 text-blue-700"
+                : "text-slate-500 hover:bg-slate-100"
+            }`}
+          >
+            🧳 Journeys
+          </button>
+          <button
+            onClick={() => setPage("map")}
+            className={`rounded-md px-2.5 py-1.5 ${
+              page === "map"
+                ? "bg-blue-50 text-blue-700"
+                : "text-slate-500 hover:bg-slate-100"
+            }`}
+          >
+            🗺️ Map
+          </button>
+          {isAdmin && (
+            <button
+              onClick={() => setPage("admin")}
+              className={`rounded-md px-2.5 py-1.5 ${
+                page === "admin"
+                  ? "bg-purple-50 text-purple-700"
+                  : "text-slate-500 hover:bg-slate-100"
+              }`}
+            >
+              👤 Admin
+            </button>
+          )}
+        </nav>
+        <div className="flex items-center gap-2 text-xs text-slate-500">
           <span className="hidden sm:inline">
-            {stops.length} stop{stops.length !== 1 && "s"} · {geocodedCount} geocoded
+            👋 {session.user?.display_name}
           </span>
+          {session.user?.role === "admin" && (
+            <span className="rounded-full bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700">
+              admin
+            </span>
+          )}
+          <button
+            onClick={logout}
+            className="rounded-md border border-slate-200 px-2 py-1 font-medium hover:bg-slate-50"
+          >
+            Log out
+          </button>
         </div>
       </header>
 
-      {/* Main */}
-      <main className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        {/* Sidebar */}
-        <aside className="flex w-full flex-col gap-4 overflow-y-auto border-b border-slate-200 bg-white p-4 lg:w-[460px] lg:border-b-0 lg:border-r">
-          <UploadPanel onParse={handleParse} busy={busy} />
-          <ControlPanel
-            stops={stops}
-            viewCount={visibleStops.length}
-            source={source}
-            showLines={showLines}
-            onToggleLines={() => setShowLines((v) => !v)}
-            showStates={showStates}
-            onToggleStates={() => setShowStates((v) => !v)}
-            showCountries={showCountries}
-            onToggleCountries={() => setShowCountries((v) => !v)}
-            onRecenter={() => setFlySignal((n) => n + 1)}
-            onGeocode={handleRegeocode}
-            flaggedCount={flaggedCount}
-            busy={busy}
-            view={view}
-            onViewChange={setView}
-            years={years}
-            onClear={clearSaved}
-            onClearSaved={clearSaved}
-          />
-          <ItineraryTable
-            stops={visibleStops}
-            onUpdate={updateStop}
-            onAdd={addStop}
-            onDelete={deleteStop}
-            onMove={moveStop}
-            onFocus={focusStop}
-            onDisambiguate={disambiguate}
-            onLocate={locateStop}
-          />
-        </aside>
+      {page === "library" && (
+        <JourneyLibrary
+          journeys={journeys}
+          onOpen={handleOpenJourney}
+          onNew={handleNewJourney}
+          onDelete={handleDeleteJourney}
+          busy={busy}
+        />
+      )}
 
-        {/* Map view */}
-        <section className="relative min-h-[55vh] flex-1 lg:min-h-0">
-          <MapView
-            stops={visibleStops}
-            showLines={showLines}
-            showStates={showStates}
-            showCountries={showCountries}
-            flySignal={flySignal}
-            focus={focus}
-          />
-          {status.kind !== "idle" && status.message && (
-            <div
-              className={`absolute left-1/2 top-3 z-[1200] w-[min(92%,440px)] -translate-x-1/2 rounded-lg px-3 py-2 text-xs font-medium shadow ${
-                status.kind === "error"
-                  ? "bg-red-600 text-white"
-                  : status.kind === "ready"
-                    ? "bg-emerald-600 text-white"
-                    : "bg-slate-900/85 text-white"
-              }`}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <span className="truncate">{status.message}</span>
-                {busy && (
-                  <button
-                    onClick={stopWork}
-                    className="shrink-0 rounded bg-white/20 px-2 py-0.5 text-[10px] font-semibold hover:bg-white/35"
-                  >
-                    Cancel
-                  </button>
+      {page === "admin" && isAdmin && <AdminPage token={session.token} />}
+
+      {page === "map" && (
+        <main className="flex min-h-0 flex-1 flex-col lg:flex-row">
+          {/* Sidebar */}
+          <aside className="flex w-full flex-col gap-4 overflow-y-auto border-b border-slate-200 bg-white p-4 lg:w-[460px] lg:border-b-0 lg:border-r">
+            <UploadPanel onParse={handleParse} busy={busy} />
+            <ControlPanel
+              stops={stops}
+              viewCount={visibleStops.length}
+              source={source}
+              showLines={showLines}
+              onToggleLines={() => setShowLines((v) => !v)}
+              showStates={showStates}
+              onToggleStates={() => setShowStates((v) => !v)}
+              showCountries={showCountries}
+              onToggleCountries={() => setShowCountries((v) => !v)}
+              onRecenter={() => setFlySignal((n) => n + 1)}
+              onGeocode={handleRegeocode}
+              flaggedCount={flaggedCount}
+              busy={busy}
+              view={view}
+              onViewChange={setView}
+              years={years}
+              journeyTitle={journeyTitle}
+              onJourneyTitleChange={setJourneyTitle}
+              onSaveJourney={handleSaveJourney}
+              saving={saving}
+              onClear={clearSaved}
+              onClearSaved={clearSaved}
+            />
+            <ItineraryTable
+              stops={visibleStops}
+              onUpdate={updateStop}
+              onAdd={addStop}
+              onDelete={deleteStop}
+              onMove={moveStop}
+              onFocus={focusStop}
+              onDisambiguate={disambiguate}
+              onLocate={locateStop}
+            />
+          </aside>
+
+          {/* Map view */}
+          <section className="relative min-h-[55vh] flex-1 lg:min-h-0">
+            <MapView
+              stops={visibleStops}
+              showLines={showLines}
+              showStates={showStates}
+              showCountries={showCountries}
+              flySignal={flySignal}
+              focus={focus}
+            />
+            {status.kind !== "idle" && status.message && (
+              <div
+                className={`absolute left-1/2 top-3 z-[1200] w-[min(92%,440px)] -translate-x-1/2 rounded-lg px-3 py-2 text-xs font-medium shadow ${
+                  status.kind === "error"
+                    ? "bg-red-600 text-white"
+                    : status.kind === "ready"
+                      ? "bg-emerald-600 text-white"
+                      : "bg-slate-900/85 text-white"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="truncate">{status.message}</span>
+                  {busy && (
+                    <button
+                      onClick={stopWork}
+                      className="shrink-0 rounded bg-white/20 px-2 py-0.5 text-[10px] font-semibold hover:bg-white/35"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+                {status.kind === "geocoding" && status.progress && (
+                  <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-white/25">
+                    <div
+                      className="h-full rounded-full bg-white transition-all duration-300"
+                      style={{
+                        width: `${
+                          status.progress.total
+                            ? Math.round((status.progress.done / status.progress.total) * 100)
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
                 )}
               </div>
-              {status.kind === "geocoding" && status.progress && (
-                <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-white/25">
-                  <div
-                    className="h-full rounded-full bg-white transition-all duration-300"
-                    style={{
-                      width: `${
-                        status.progress.total
-                          ? Math.round((status.progress.done / status.progress.total) * 100)
-                          : 0
-                      }%`,
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-          )}
-        </section>
-      </main>
+            )}
+          </section>
+        </main>
+      )}
     </div>
   );
 }

@@ -34,6 +34,10 @@ export default function ControlPanel({
   onToggleCountries,
   onRecenter,
   onGeocode,
+  journeyTitle,
+  onJourneyTitleChange,
+  onSaveJourney,
+  saving,
   onClear,
   flaggedCount,
   busy,
@@ -177,6 +181,23 @@ else map.setView([20,10],2);
 
   return (
     <div className="rounded-lg border border-slate-200 p-3">
+      {/* Save journey */}
+      <div className="mb-3 flex items-center gap-1.5">
+        <input
+          value={journeyTitle}
+          onChange={(e) => onJourneyTitleChange(e.target.value)}
+          placeholder="Journey title"
+          className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1.5 text-xs focus:border-blue-500 focus:outline-none"
+        />
+        <button
+          onClick={onSaveJourney}
+          disabled={saving || !stops.length || busy}
+          className="shrink-0 rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40"
+        >
+          {saving ? "Saving…" : "💾 Save journey"}
+        </button>
+      </div>
+
       {/* Trip summary */}
       {stops.length > 0 && (
         <div className="mb-3 grid grid-cols-2 gap-1.5 text-[11px]">

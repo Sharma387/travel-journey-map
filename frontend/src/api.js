@@ -17,11 +17,19 @@ async function request(url, options, timeoutMs = 60_000) {
       }
       throw new Error(detail);
     }
+    if (res.status === 204) return null; // no content (DELETE etc.)
     return res.json();
   } finally {
     if (timer) clearTimeout(timer);
   }
 }
+
+// Authorized JSON helper.
+const authJson = (token, body) => ({
+  "Content-Type": "application/json",
+  ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+});
 
 export async function parseItinerary({ file, text }, signal) {
   const body = new FormData();
@@ -70,4 +78,104 @@ export async function searchLocations(query, signal) {
     },
     30_000,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+export async function login(username, password) {
+  return request("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function fetchMe(token) {
+  return request("/api/auth/me", { headers: authJson(token) });
+}
+
+// ---------------------------------------------------------------------------
+// Journeys
+// ---------------------------------------------------------------------------
+export async function fetchJourneys(token) {
+  return request("/api/journeys", { headers: authJson(token) });
+}
+
+export async function fetchJourney(id, token) {
+  return request(`/api/journeys/${id}`, { headers: authJson(token) });
+}
+
+export async function createJourney(payload, token) {
+  return request("/api/journeys", {
+    method: "POST",
+    headers: authJson(token, payload),
+  });
+}
+
+export async function updateJourney(id, payload, token) {
+  return request(`/api/journeys/${id}`, {
+    method: "PUT",
+    headers: authJson(token, payload),
+  });
+}
+
+export async function deleteJourney(id, token) {
+  return request(`/api/journeys/${id}`, {
+    method: "DELETE",
+    headers: authJson(token),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Admin
+// ---------------------------------------------------------------------------
+export async function adminUsers(token) {
+  return request("/api/admin/users", { headers: authJson(token) });
+}
+
+export async function adminCreateUser(body, token) {
+  return request("/api/admin/users", {
+    method: "POST",
+    headers: authJson(token, body),
+  });
+}
+
+export async function adminUpdateUser(id, body, token) {
+  return request(`/api/admin/users/${id}`, {
+    method: "PATCH",
+    headers: authJson(token, body),
+  });
+}
+
+export async function adminDeleteUser(id, token) {
+  return request(`/api/admin/users/${id}`, {
+    method: "DELETE",
+    headers: authJson(token),
+  });
+}
+
+export async function adminFamilies(token) {
+  return request("/api/admin/families", { headers: authJson(token) });
+}
+
+export async function adminCreateFamily(name, token) {
+  return request("/api/admin/families", {
+    method: "POST",
+    headers: authJson(token, { name }),
+  });
+}
+
+export async function adminUpdateFamily(id, body, token) {
+  return request(`/api/admin/families/${id}`, {
+    method: "PATCH",
+    headers: authJson(token, body),
+  });
+}
+
+export async function adminDeleteFamily(id, token) {
+  return request(`/api/admin/families/${id}`, {
+    method: "DELETE",
+    headers: authJson(token),
+  });
 }

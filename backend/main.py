@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from auth_routes import router as auth_router
+from journey_routes import router as journey_router
 from db import init_db
 from models import User
 from security import hash_password
@@ -97,6 +98,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(journey_router)
 
 geocoder = Geocoder(delay=GEOCODE_DELAY)
 

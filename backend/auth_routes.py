@@ -158,38 +158,3 @@ def admin_delete_family(
         member.family_id = None
     db.delete(family)
     db.commit()
-
-
-# ---------------------------------------------------------------------------
-# Admin helper: serialise a stop row back to the frontend stop shape
-# ---------------------------------------------------------------------------
-def stop_to_dict(stop) -> dict:
-    def _loads(value):
-        if not value:
-            return None
-        try:
-            return json.loads(value)
-        except (TypeError, ValueError):
-            return None
-
-    return {
-        "order": stop.order,
-        "location": stop.location,
-        "exact_location": stop.exact_location,
-        "start_date": stop.start_date,
-        "end_date": stop.end_date,
-        "category": stop.category,
-        "notes": stop.notes,
-        "lat": stop.lat,
-        "lng": stop.lng,
-        "geojson": _loads(stop.geojson),
-        "state_name": stop.state_name,
-        "state_geojson": _loads(stop.state_geojson),
-        "country_name": stop.country_name,
-        "country_geojson": _loads(stop.country_geojson),
-        "is_ambiguous": stop.is_ambiguous,
-        "warning": stop.warning,
-        "candidates": _loads(stop.candidates) or [],
-        "note": stop.note,
-        "geocode_error": stop.geocode_error,
-    }
