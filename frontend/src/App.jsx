@@ -7,6 +7,7 @@ import LoginPage from "./components/LoginPage";
 import JourneyLibrary from "./components/JourneyLibrary";
 import AdminPage from "./components/AdminPage";
 import FamilyMap from "./components/FamilyMap";
+import ReviewPanel from "./components/ReviewPanel";
 import {
   geocodeStops,
   parseItinerary,
@@ -432,7 +433,7 @@ export default function App() {
     const controller = new AbortController();
     cancelRef.current = controller;
     const seq = ++runSeq.current;
-    setStatus({ kind: "parsing", message: "Parsing itinerary…" });
+    setStatus({ kind: "parsing", message: "Extracting itinerary…" });
     try {
       const res = await parseItinerary(payload, controller.signal);
       if (seq !== runSeq.current) return;
@@ -441,6 +442,7 @@ export default function App() {
         llmUsed: res.llm_used,
         llmModel: res.llm_model || null,
         engine: res.engine || null,
+        provider: res.provider || null,
         preview: res.text_preview,
       });
       const next = renumber(sortChronologically(res.stops));
@@ -450,27 +452,15 @@ export default function App() {
         return;
       }
 
-      // Show the parsed table immediately, then geocode with live progress.
-      setStatus({
-        kind: "geocoding",
-        message: "Geocoding stops…",
-        progress: { done: 0, total: next.length },
-      });
-      const geocoded = await applyGeocode(next, {
-        signal: controller.signal,
-        onProgress: geoProgress(next.length),
-        onBatch: setStops,
-      });
-      if (seq !== runSeq.current) return;
-      setStops(geocoded);
-      const located = geocoded.filter((s) => s.lat != null && s.lng != null).length;
+      // Review gate: show the AI-extracted itinerary for editing before
+      // geocoding + plotting.
+      setJourneyId(null);
+      setJourneyTitle("");
+      setPage("review");
       setStatus({
         kind: "ready",
-        message: `Parsed ${geocoded.length} stop(s), ${located} geocoded${
-          res.llm_used ? " via local LLM" : ""
-        }.`,
+        message: `Extracted ${next.length} stop(s) — review and plot.`,
       });
-      setFlySignal((n) => n + 1);
     } catch (err) {
       if (isAbortError(err)) {
         setStatus({ kind: "ready", message: "Cancelled." });
@@ -481,6 +471,32 @@ export default function App() {
       if (seq === runSeq.current) cancelRef.current = null;
     }
   }
+
+  // Plot the reviewed itinerary: geocode all stops, then open the map.
+  const handlePlot = useCallback(async () => {
+    if (!stops.length) return;
+    setStatus({
+      kind: "geocoding",
+      message: "Geocoding stops…",
+      progress: { done: 0, total: stops.length },
+    });
+    try {
+      const geocoded = await applyGeocode(stops, {
+        onProgress: geoProgress(stops.length),
+        onBatch: setStops,
+      });
+      setStops(geocoded);
+      const located = geocoded.filter((s) => s.lat != null && s.lng != null).length;
+      setStatus({
+        kind: "ready",
+        message: `Plotted ${located} of ${geocoded.length} stops on the map.`,
+      });
+      setPage("map");
+      setFlySignal((n) => n + 1);
+    } catch (err) {
+      setStatus({ kind: "error", message: err.message || String(err) });
+    }
+  }, [stops, applyGeocode, geoProgress]);
 
   async function handleRegeocode() {
     if (busy) return;
@@ -848,6 +864,23 @@ export default function App() {
       {page === "admin" && isAdmin && <AdminPage token={session.token} />}
 
       {page === "family" && <FamilyMap token={session.token} />}
+
+      {page === "review" && (
+        <ReviewPanel
+          source={source}
+          stops={stops}
+          busy={busy}
+          onPlot={handlePlot}
+          onBack={() => setPage("library")}
+          onUpdate={updateStop}
+          onAdd={addStop}
+          onDelete={deleteStop}
+          onMove={moveStop}
+          onFocus={focusStop}
+          onDisambiguate={disambiguate}
+          onLocate={locateStop}
+        />
+      )}
 
       {page === "map" && (
         <main className="flex min-h-0 flex-1 flex-col lg:flex-row">

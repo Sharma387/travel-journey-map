@@ -241,11 +241,13 @@ else map.setView([20,10],2);
         {source && (
           <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium capitalize">
             {source.type}
-            {source.engine === "llm"
-              ? ` · LLM${source.llmModel ? ` (${source.llmModel})` : ""}`
+            {source.engine === "ai"
+              ? ` · AI${source.provider === "omniroute" ? " (Omniroute)" : ""}${source.llmModel ? ` (${source.llmModel})` : ""}`
               : source.engine === "structured"
                 ? " · structured"
-                : " · heuristic"}
+                : source.engine === "llm"
+                  ? ` · LLM${source.llmModel ? ` (${source.llmModel})` : ""}`
+                  : " · heuristic"}
           </span>
         )}
       </div>

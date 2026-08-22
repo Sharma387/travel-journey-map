@@ -333,6 +333,12 @@ export default function ItineraryTable({
                         {stop.exact_location}
                       </div>
                     )}
+                    {stop.confirmed === false && (
+                      <div className="mt-0.5 flex items-center gap-1 text-[10px] text-amber-700">
+                        <span>⚠</span>
+                        <span>AI uncertain — please verify</span>
+                      </div>
+                    )}
                   </td>
 
                   {/* Start date */}

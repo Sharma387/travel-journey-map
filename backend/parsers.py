@@ -31,6 +31,14 @@ SOURCE_TYPES: dict[str, str] = {
     ".txt": "text",
     ".md": "text",
     ".markdown": "text",
+    ".docx": "docx",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".webp": "image",
+    ".gif": "image",
+    ".bmp": "image",
+    ".tiff": "image",
 }
 
 MAX_TEXT_CHARS = 60_000  # cap text sent toward the LLM
@@ -61,6 +69,12 @@ def extract_content(filename: str, data: bytes) -> dict[str, Any]:
         text, structured = _extract_excel(data)
     elif source_type == "csv":
         text, structured = _extract_csv(data)
+    elif source_type == "docx":
+        text, structured = _extract_docx(data), None
+    elif source_type == "image":
+        # No text to extract locally — the endpoint routes images to a vision
+        # model (Omniroute auto/best-vision, Ollama vision fallback).
+        text, structured = "", None
     else:
         text, structured = _decode_text(data), None
     return {
@@ -81,6 +95,20 @@ def _extract_pdf(data: bytes) -> str:
         for page in pdf.pages:
             pages.append(page.extract_text() or "")
     return "\n\n".join(pages)
+
+
+def _extract_docx(data: bytes) -> str:
+    """Extract text from a .docx (Word) file."""
+    from docx import Document  # python-docx, lazy import
+
+    doc = Document(io.BytesIO(data))
+    parts: list[str] = [p.text for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells]
+            if any(cells):
+                parts.append(" | ".join(cells))
+    return "\n".join(parts)
 
 
 def _extract_excel(data: bytes) -> tuple[str, list[dict[str, Any]] | None]:

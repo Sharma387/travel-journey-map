@@ -44,13 +44,13 @@ export default function UploadPanel({ onParse, busy }) {
         <input
           ref={inputRef}
           type="file"
-          accept=".pdf,.xlsx,.xls,.csv,.txt,.md,.markdown"
+          accept=".pdf,.xlsx,.xls,.csv,.txt,.md,.markdown,.docx,.png,.jpg,.jpeg,.webp,.gif,.bmp,.tiff"
           className="hidden"
           onChange={(e) => selectFile(e.target.files)}
         />
         <div className="text-2xl">📄</div>
         <p className="mt-1 text-sm font-medium text-slate-600">Drop a file here or click to browse</p>
-        <p className="text-xs text-slate-400">PDF · Excel · CSV · TXT</p>
+        <p className="text-xs text-slate-400">PDF · Excel · CSV · Word · TXT · Screenshot</p>
         {file && (
           <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
             {file.name}

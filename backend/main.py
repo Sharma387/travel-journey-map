@@ -31,6 +31,14 @@ from starlette.concurrency import run_in_threadpool
 
 from auth_routes import router as auth_router
 from journey_routes import router as journey_router
+from extraction_provider import (
+    EXTRACTION_MODEL,
+    OLLAMA_VISION_MODEL,
+    VISION_MODEL,
+    query_ollama_vision,
+    query_omniroute_text,
+    query_omniroute_vision,
+)
 from db import init_db
 from models import User
 from security import hash_password
@@ -125,6 +133,9 @@ for a single day), otherwise ""
 - "category": "Past", "Current", or "Upcoming" — compare the stop's dates to \
 today's date ({TODAY})
 - "notes": a short summary (max ~200 chars) of what happened there, otherwise ""
+- "confirmed": true when you are confident this is a real visited stop; false \
+when uncertain (e.g. it might be pure transit, a hotel, or the place name is \
+unclear from the messy input).
 
 Rules:
 1. Keep the chronological order of the journey.
@@ -336,6 +347,12 @@ def _normalize_stops(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
         notes = str(item.get("notes") or item.get("note") or "").strip()[:500]
         lat, lng = item.get("lat"), item.get("lng")
+        conf = item.get("confirmed", True)
+        confirmed = (
+            conf
+            if isinstance(conf, bool)
+            else str(conf).lower() not in ("false", "no", "0", "")
+        )
         stops.append(
             {
                 "order": len(stops) + 1,
@@ -345,6 +362,7 @@ def _normalize_stops(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "end_date": end,
                 "category": category,
                 "notes": notes,
+                "confirmed": confirmed,
                 "lat": _clean_coord(lat),
                 "lng": _clean_coord(lng),
             }
@@ -393,7 +411,7 @@ async def parse_itinerary(
     if file is None and not (text or "").strip():
         raise HTTPException(
             status_code=400,
-            detail="Provide a file (PDF / XLSX / CSV / TXT) or raw itinerary text.",
+            detail="Provide a file (PDF / XLSX / CSV / TXT / DOCX / image) or raw itinerary text.",
         )
 
     if file is not None:
@@ -407,36 +425,89 @@ async def parse_itinerary(
     else:
         content = {"source_type": "text", "text": (text or "").strip(), "structured": None}
 
-    stops: list[dict[str, Any]]
+    stops: list[dict[str, Any]] = []
     llm_used = False
     llm_model: str | None = None
-    engine = "structured" if content.get("structured") else "heuristic"
+    engine: str = "structured" if content.get("structured") else ""
+    provider: str | None = None
+
+    # 1. Structured fast-path (known table columns — no AI needed).
     if content.get("structured"):
         stops = _normalize_stops(content["structured"])
-    else:
-        available = await _fetch_models()
-        model = _pick_model(available) if available else None
-        if model:
-            try:
-                raw = await _query_llm(content["text"], model=model)
-                stops = _normalize_stops(raw)
-                llm_used = True
-                llm_model = model
-                engine = "llm"
-            except Exception as exc:
-                log.warning(
-                    "LLM parse failed (%s) — model %r at %s; using local heuristic parser.",
-                    exc,
-                    model,
-                    LLM_BASE_URL,
-                )
-                stops = _normalize_stops(heuristic_parse(content["text"]))
+        engine = "structured"
+
+    # 2. AI extraction: Omniroute (primary) → Ollama (fallback) → heuristic.
+    elif content.get("source_type") == "image":
+        # Vision path — send the image to a vision-capable model.
+        mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp",
+                "tiff": "image/tiff"}.get(
+            (file.filename or "").split(".")[-1].lower(), "image/png"
+        )
+
+        raw = await query_omniroute_vision(data, mime)
+        if raw:
+            provider = "omniroute"
+            llm_used = True
+            llm_model = VISION_MODEL
         else:
-            log.warning(
-                "Local LLM unreachable at %s — using local heuristic parser.",
-                LLM_BASE_URL,
+            raw = await query_ollama_vision(data, mime)
+            if raw:
+                provider = "ollama"
+                llm_used = True
+                llm_model = OLLAMA_VISION_MODEL
+
+        if raw:
+            try:
+                stops = _normalize_stops(_parse_llm_json(raw))
+                engine = "ai"
+            except Exception as exc:
+                log.warning("AI vision parse failed: %s", exc)
+
+        if not stops:
+            raise HTTPException(
+                status_code=422,
+                detail="Couldn't read the itinerary from the image. "
+                "Try a clearer screenshot or paste the text directly.",
             )
+
+    else:
+        # Text path: Omniroute → Ollama → heuristic.
+        prompt = _build_prompt(content["text"])
+
+        raw = await query_omniroute_text(prompt)
+        if raw:
+            provider = "omniroute"
+            llm_used = True
+            llm_model = EXTRACTION_MODEL
+        else:
+            # Ollama fallback (existing _query_llm).
+            available = await _fetch_models()
+            model = _pick_model(available) if available else None
+            if model:
+                try:
+                    raw = await _query_llm(content["text"], model=model)
+                    # _query_llm already returns parsed stops (list of dicts).
+                    stops = _normalize_stops(raw)
+                    llm_used = True
+                    llm_model = model
+                    provider = "ollama"
+                    engine = "ai"
+                except Exception as exc:
+                    log.warning("LLM parse failed (%s): %r", exc, model)
+
+        if raw and provider == "omniroute":
+            try:
+                stops = _normalize_stops(_parse_llm_json(raw))
+                engine = "ai"
+            except Exception as exc:
+                log.warning("Omniroute parse failed: %s", exc)
+
+        if not stops:
+            log.warning("AI extraction failed — falling back to heuristic parser.")
             stops = _normalize_stops(heuristic_parse(content["text"]))
+            provider = "heuristic"
+            engine = "heuristic"
 
     if not stops:
         raise HTTPException(
@@ -450,6 +521,7 @@ async def parse_itinerary(
         "llm_used": llm_used,
         "llm_model": llm_model,
         "engine": engine,
+        "provider": provider,
         "stops": stops,
     }
 
