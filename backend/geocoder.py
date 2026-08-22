@@ -290,11 +290,15 @@ class Geocoder:
         if not data:
             self._store(qkey, query, None, None, None, False)
             return None
-        first = data[0]
-        lat = float(first["lat"]) if first.get("lat") is not None else None
-        lng = float(first["lon"]) if first.get("lon") is not None else None
-        geojson = first.get("geojson")
-        self._store(qkey, query, lat, lng, first.get("display_name"), bool(geojson), geojson)
+        # Prefer the first result that actually carries a polygon; Nominatim's
+        # top hit for a country name can occasionally be a sub-division or a
+        # point feature without geometry.
+        chosen = next((r for r in data[:3] if r.get("geojson")), data[0])
+        lat = float(chosen["lat"]) if chosen.get("lat") is not None else None
+        lng = float(chosen["lon"]) if chosen.get("lon") is not None else None
+        geojson = chosen.get("geojson")
+        self._store(qkey, query, lat, lng, chosen.get("display_name"),
+                    bool(geojson), geojson)
         return geojson
 
     def _country_info(self, cached):

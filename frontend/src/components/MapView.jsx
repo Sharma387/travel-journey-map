@@ -29,15 +29,16 @@ function areaColors(key) {
   };
 }
 
-// Deterministic LIGHT pastel per country name (high lightness, low saturation)
-// so the more vivid state fills stay clearly visible on top of them.
+// Deterministic LIGHT pastel per country name. Still clearly visible on the
+// basemap (55% sat / 78% light) but lighter than the state fills so the states
+// stay the hero once the traveller has visited them.
 function countryColors(key) {
   let h = 0;
   for (const ch of key) h = (h * 31 + ch.codePointAt(0)) >>> 0;
   const hue = ((h % 360) * 137.508) % 360;
   return {
-    fill: `hsl(${hue}, 38%, 90%)`,
-    stroke: `hsl(${hue}, 30%, 78%)`,
+    fill: `hsl(${hue}, 55%, 78%)`,
+    stroke: `hsl(${hue}, 45%, 64%)`,
   };
 }
 
@@ -172,16 +173,17 @@ export default function MapView({
                 pathOptions={{
                   color: stroke,
                   fillColor: fill,
-                  fillOpacity: 0.5,
-                  weight: 1,
-                  opacity: 0.7,
+                  fillOpacity: 0.65,
+                  weight: 1.5,
+                  opacity: 0.9,
                   renderer: canvasRenderer,
                 }}
               />
             ));
           })}
 
-        {/* State/region boundary fills — drawn beneath the route line + markers. */}
+        {/* State/region boundary fills — override the country colour where the
+            traveller actually visited, so visited states clearly pop. */}
         {showStates &&
           areas.flatMap(([key, geo]) => {
             const rings = geoToLatLngs(geo);
@@ -194,9 +196,9 @@ export default function MapView({
                 pathOptions={{
                   color: stroke,
                   fillColor: fill,
-                  fillOpacity: 0.35,
-                  weight: 2,
-                  opacity: 0.75,
+                  fillOpacity: 0.9,
+                  weight: 2.5,
+                  opacity: 0.95,
                   renderer: canvasRenderer,
                 }}
               />
