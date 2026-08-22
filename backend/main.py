@@ -39,6 +39,7 @@ from extraction_provider import (
     query_omniroute_text,
     query_omniroute_vision,
 )
+from ocr import extract_image_text
 from db import init_db
 from models import User
 from security import hash_password
@@ -403,6 +404,37 @@ async def _llm_info() -> dict[str, Any]:
     }
 
 
+async def _ai_extract_text(text: str) -> tuple[list[dict[str, Any]], str, str | None, bool]:
+    """AI extraction from text: Omniroute → Ollama → heuristic.
+
+    Returns ``(stops, provider, model, llm_used)``. ``provider`` is one of
+    ``omniroute``, ``ollama``, or ``heuristic``.
+    """
+    prompt = _build_prompt(text)
+
+    raw = await query_omniroute_text(prompt)
+    if raw:
+        try:
+            stops = _normalize_stops(_parse_llm_json(raw))
+            if stops:
+                return stops, "omniroute", EXTRACTION_MODEL, True
+        except Exception as exc:
+            log.warning("Omniroute parse failed: %s", exc)
+
+    available = await _fetch_models()
+    model = _pick_model(available) if available else None
+    if model:
+        try:
+            stops = _normalize_stops(await _query_llm(text, model=model))
+            if stops:
+                return stops, "ollama", model, True
+        except Exception as exc:
+            log.warning("LLM parse failed (%s): %r", exc, model)
+
+    stops = _normalize_stops(heuristic_parse(text))
+    return stops, "heuristic", None, bool(stops)
+
+
 @app.post("/api/parse-itinerary")
 async def parse_itinerary(
     file: UploadFile | None = File(default=None),
@@ -435,79 +467,53 @@ async def parse_itinerary(
     if content.get("structured"):
         stops = _normalize_stops(content["structured"])
         engine = "structured"
+        provider = "structured"
 
-    # 2. AI extraction: Omniroute (primary) → Ollama (fallback) → heuristic.
+    # 2. Image: OCR first, then the normal text AI path.
     elif content.get("source_type") == "image":
-        # Vision path — send the image to a vision-capable model.
-        mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-                "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp",
-                "tiff": "image/tiff"}.get(
-            (file.filename or "").split(".")[-1].lower(), "image/png"
-        )
+        ocr_text = await run_in_threadpool(extract_image_text, data)
+        if ocr_text.strip():
+            stops, provider, llm_model, llm_used = await _ai_extract_text(ocr_text)
+            if provider in ("omniroute", "ollama"):
+                provider = f"ocr+{provider}"
+            engine = "ai" if llm_used else "heuristic"
+            content["text"] = ocr_text  # preview the OCR'd text
 
-        raw = await query_omniroute_vision(data, mime)
-        if raw:
-            provider = "omniroute"
-            llm_used = True
-            llm_model = VISION_MODEL
-        else:
-            raw = await query_ollama_vision(data, mime)
+        if not stops:
+            # OCR failed — try a vision model as a last resort.
+            mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                    "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp",
+                    "tiff": "image/tiff"}.get(
+                (file.filename or "").split(".")[-1].lower(), "image/png"
+            )
+            raw = await query_omniroute_vision(data, mime)
             if raw:
-                provider = "ollama"
-                llm_used = True
-                llm_model = OLLAMA_VISION_MODEL
-
-        if raw:
-            try:
-                stops = _normalize_stops(_parse_llm_json(raw))
-                engine = "ai"
-            except Exception as exc:
-                log.warning("AI vision parse failed: %s", exc)
+                provider = "vision"
+                llm_model = VISION_MODEL
+            else:
+                raw = await query_ollama_vision(data, mime)
+                if raw:
+                    provider = "vision"
+                    llm_model = OLLAMA_VISION_MODEL
+            if raw:
+                try:
+                    stops = _normalize_stops(_parse_llm_json(raw))
+                    engine = "ai"
+                    llm_used = True
+                except Exception as exc:
+                    log.warning("AI vision parse failed: %s", exc)
 
         if not stops:
             raise HTTPException(
                 status_code=422,
-                detail="Couldn't read the itinerary from the image. "
+                detail="Couldn't read the itinerary from the image (OCR found no text). "
                 "Try a clearer screenshot or paste the text directly.",
             )
 
+    # 3. Text / PDF / DOCX: the AI-first text path.
     else:
-        # Text path: Omniroute → Ollama → heuristic.
-        prompt = _build_prompt(content["text"])
-
-        raw = await query_omniroute_text(prompt)
-        if raw:
-            provider = "omniroute"
-            llm_used = True
-            llm_model = EXTRACTION_MODEL
-        else:
-            # Ollama fallback (existing _query_llm).
-            available = await _fetch_models()
-            model = _pick_model(available) if available else None
-            if model:
-                try:
-                    raw = await _query_llm(content["text"], model=model)
-                    # _query_llm already returns parsed stops (list of dicts).
-                    stops = _normalize_stops(raw)
-                    llm_used = True
-                    llm_model = model
-                    provider = "ollama"
-                    engine = "ai"
-                except Exception as exc:
-                    log.warning("LLM parse failed (%s): %r", exc, model)
-
-        if raw and provider == "omniroute":
-            try:
-                stops = _normalize_stops(_parse_llm_json(raw))
-                engine = "ai"
-            except Exception as exc:
-                log.warning("Omniroute parse failed: %s", exc)
-
-        if not stops:
-            log.warning("AI extraction failed — falling back to heuristic parser.")
-            stops = _normalize_stops(heuristic_parse(content["text"]))
-            provider = "heuristic"
-            engine = "heuristic"
+        stops, provider, llm_model, llm_used = await _ai_extract_text(content["text"])
+        engine = "ai" if llm_used else "heuristic"
 
     if not stops:
         raise HTTPException(
