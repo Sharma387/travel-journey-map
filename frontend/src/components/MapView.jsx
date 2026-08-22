@@ -100,6 +100,14 @@ function geoToLatLngs(geojson) {
   return [];
 }
 
+// Leaflet LatLngBounds covering a polygon geometry (state/city/country), or
+// null when there is no usable geometry. Used to zoom to the visited state.
+function geoBounds(geojson) {
+  const rings = geoToLatLngs(geojson);
+  if (!rings.length) return null;
+  return L.latLngBounds(rings.flat());
+}
+
 // Shared canvas renderer keeps hundreds of polygon vertices light on
 // low-end hardware (no SVG DOM nodes per city).
 const canvasRenderer = L.canvas({ padding: 0.5 });
@@ -130,6 +138,28 @@ function numberedIcon(order, ambiguous) {
   });
 }
 
+// "Zoom to state" button inside a pin popup.
+function ZoomToState({ stop }) {
+  const map = useMap();
+  const onClick = () => {
+    const bounds = geoBounds(stop.state_geojson || stop.geojson);
+    if (bounds) {
+      map.fitBounds(bounds, { padding: [40, 40] });
+    } else {
+      map.flyTo([stop.lat, stop.lng], Math.max(map.getZoom(), 11), { duration: 0.8 });
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mt-1.5 rounded bg-blue-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-blue-700"
+    >
+      🔍 Zoom to state
+    </button>
+  );
+}
+
 function MapController({ positioned, flySignal, focus }) {
   const map = useMap();
 
@@ -151,7 +181,13 @@ function MapController({ positioned, flySignal, focus }) {
   useEffect(() => {
     if (!focus.stamp) return;
     const s = positioned.find((p) => p.order === focus.order);
-    if (s) {
+    if (!s) return;
+    // Zoom to the visited STATE (or city polygon as fallback) so the whole
+    // region fits on screen; if no polygon exists, just fly to the point.
+    const bounds = geoBounds(s.state_geojson || s.geojson);
+    if (bounds) {
+      map.fitBounds(bounds, { padding: [40, 40] });
+    } else {
       map.flyTo([s.lat, s.lng], Math.max(map.getZoom(), 11), { duration: 0.8 });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -358,6 +394,7 @@ export default function MapView({
                     ⚠ {s.warning || "Ambiguous location — verify the region."}
                   </div>
                 )}
+                <ZoomToState stop={s} />
               </div>
             </Popup>
           </Marker>
