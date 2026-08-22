@@ -87,7 +87,10 @@ def _extract_excel(data: bytes) -> tuple[str, list[dict[str, Any]] | None]:
     try:
         import pandas as pd
 
-        sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, dtype=object)
+        # header=None keeps title rows so we can detect the real header row.
+        sheets = pd.read_excel(
+            io.BytesIO(data), sheet_name=None, dtype=object, header=None
+        )
         return _frames_to_content(list(sheets.values()))
     except ImportError:
         # pandas unavailable on this platform (Python 3.14+?) → fallback to openpyxl
@@ -98,30 +101,34 @@ def _extract_excel_openpyxl(data: bytes) -> tuple[str, list[dict[str, Any]] | No
     from openpyxl import load_workbook
 
     lines: list[str] = []
-    rows: list[dict[str, Any]] = []
+    all_stops: list[dict[str, Any]] = []
     workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     try:
         for sheet in workbook.worksheets:
             grid = [list(row) for row in sheet.iter_rows(values_only=True)]
             if not grid:
                 continue
-            headers = [str(c).strip() if c is not None else "" for c in grid[0]]
+            header_idx = _find_header_row(grid)
+            headers = [str(c).strip() if c is not None else "" for c in grid[header_idx]]
             lines.append(" | ".join(headers))
-            for raw in grid[1:]:
+            rows: list[dict[str, Any]] = []
+            for raw in grid[header_idx + 1 :]:
                 cells = ["" if c is None else str(c).strip() for c in raw]
                 cells = (cells + [""] * len(headers))[: len(headers)]
                 lines.append(" | ".join(cells))
                 rows.append(dict(zip(headers, cells)))
+            sheet_stops = _rows_to_stops(rows) or []
+            all_stops.extend(sheet_stops)
     finally:
         workbook.close()
-    return "\n".join(lines), _rows_to_stops(rows)
+    return "\n".join(lines), all_stops or None
 
 
 def _extract_csv(data: bytes) -> tuple[str, list[dict[str, Any]] | None]:
     try:
         import pandas as pd
 
-        frame = pd.read_csv(io.BytesIO(data), dtype=object)
+        frame = pd.read_csv(io.BytesIO(data), dtype=object, header=None)
         return _frames_to_content([frame])
     except ImportError:
         pass
@@ -130,26 +137,49 @@ def _extract_csv(data: bytes) -> tuple[str, list[dict[str, Any]] | None]:
         reader = list(csv.DictReader(io.StringIO(text)))
     except csv.Error:
         reader = []
+    # CSV with title rows: re-detect the header row from the raw lines.
+    if reader:
+        raw_lines = [l for l in text.splitlines() if l.strip()]
+        grid = [l.split(",") for l in raw_lines]
+        idx = _find_header_row(grid)
+        if idx:
+            headers = [h.strip() for h in grid[idx]]
+            data_rows = [
+                dict(zip(headers, (row + [""] * len(headers))[: len(headers)]))
+                for row in grid[idx + 1 :]
+            ]
+            return text, _rows_to_stops(data_rows)
     return text, _rows_to_stops(reader)
 
 
 def _frames_to_content(
     frames: list[Any],
 ) -> tuple[str, list[dict[str, Any]] | None]:
-    """Convert pandas DataFrames to text + optional structured stops."""
+    """Convert pandas DataFrames to text + optional structured stops.
+
+    Frames are read with ``header=None``, so the real header row is detected
+    by scanning for known column names (handles title rows above headers).
+    Each sheet is converted to stops separately (sheets may have different
+    column layouts) and the results are merged.
+    """
     lines: list[str] = []
-    rows: list[dict[str, Any]] = []
+    all_stops: list[dict[str, Any]] = []
     for frame in frames:
         frame = frame.fillna("")
         if frame.empty:
             continue
-        headers = [str(h).strip() for h in frame.columns]
+        grid = [[str(c).strip() if c is not None else "" for c in row.tolist()] for _, row in frame.iterrows()]
+        header_idx = _find_header_row(grid)
+        headers = grid[header_idx]
         lines.append(" | ".join(headers))
-        for _, row in frame.iterrows():
-            cells = [str(c).strip() for c in row.tolist()]
+        rows: list[dict[str, Any]] = []
+        for row in grid[header_idx + 1 :]:
+            cells = (row + [""] * len(headers))[: len(headers)]
             lines.append(" | ".join(cells))
             rows.append(dict(zip(headers, cells)))
-    return "\n".join(lines), _rows_to_stops(rows)
+        sheet_stops = _rows_to_stops(rows) or []
+        all_stops.extend(sheet_stops)
+    return "\n".join(lines), all_stops or None
 
 
 def _decode_text(data: bytes) -> str:
@@ -170,7 +200,7 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "date": ("date", "day", "when", "dates"),
     "start_date": ("start_date", "start date", "start", "from", "arrival", "arrive"),
     "end_date": ("end_date", "end date", "end", "to", "departure", "depart"),
-    "notes": ("notes", "note", "description", "details", "activity", "activities", "comment", "comments", "summary", "what", "itinerary"),
+    "notes": ("notes", "note", "description", "details", "activity", "activities", "comment", "comments", "summary", "what", "itinerary", "tips", "travel tips"),
     "category": ("category", "status", "trip", "classification"),
     "lat": ("lat", "latitude"),
     "lng": ("lng", "lon", "long", "longitude"),
@@ -180,6 +210,39 @@ COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
 
 def _norm_column(name: str) -> str:
     return re.sub(r"[^a-z0-9 ]", "", name.lower()).strip()
+
+
+# Every known column word (normalized), used to detect the real header row in
+# planner-style sheets that have title rows above the headers.
+_KNOWN_COLUMN_WORDS = {
+    _norm_column(a) for aliases in COLUMN_ALIASES.values() for a in aliases
+}
+
+
+def _looks_like_header(cell: Any) -> bool:
+    """True when a cell text matches a known column name (exact or suffix)."""
+    if cell is None:
+        return False
+    norm = _norm_column(str(cell))
+    if not norm:
+        return False
+    return norm in _KNOWN_COLUMN_WORDS or any(
+        norm.endswith(" " + k) for k in _KNOWN_COLUMN_WORDS
+    )
+
+
+def _find_header_row(rows: list[list[Any]]) -> int:
+    """Index of the first row that looks like a column header.
+
+    Planner-style spreadsheets often have title/subtitle rows above the real
+    headers (e.g. "MASTER PLACES & POINTS OF INTEREST DATABASE"). We scan
+    down for the first row with at least two recognizable column names.
+    """
+    for idx, row in enumerate(rows):
+        matched = sum(1 for cell in row if _looks_like_header(cell))
+        if matched >= 2:
+            return idx
+    return 0
 
 
 def _split_multi_city(location: str) -> list[str]:
