@@ -112,6 +112,24 @@ function geoBounds(geojson) {
 // low-end hardware (no SVG DOM nodes per city).
 const canvasRenderer = L.canvas({ padding: 0.5 });
 
+// Split a ring ([lat,lng] points) at antimeridian jumps (|Δlng| > 180°) so a
+// polygon like Russia (which crosses 180°) isn't drawn as a straight line
+// across the whole map.
+function splitRing(ring) {
+  const parts = [];
+  let cur = [];
+  for (let i = 0; i < ring.length; i++) {
+    const p = ring[i];
+    if (cur.length && Math.abs(p[1] - cur[cur.length - 1][1]) > 180) {
+      parts.push(cur);
+      cur = [];
+    }
+    cur.push(p);
+  }
+  if (cur.length) parts.push(cur);
+  return parts;
+}
+
 // Strictly chronological order for the polyline: undated stops sort last.
 function chronologicalSort(list) {
   return [...list].sort((a, b) => {
@@ -262,11 +280,14 @@ export default function MapView({
   }, [positioned]);
 
   // All ~177 world countries as [name, rings] pairs (drawn beneath everything).
+  // Rings are split at the antimeridian so Russia/Antarctica/Fiji don't draw a
+  // straight line across the map; Antarctica is skipped (bottom blob noise).
   const worldCountries = useMemo(() => {
     if (!worldData || !Array.isArray(worldData.features)) return [];
     return worldData.features.flatMap((f) => {
       const name = (f.properties || {}).name || (f.properties || {}).NAME || "";
-      const rings = geoToLatLngs(f.geometry);
+      if (!name || name === "Antarctica") return [];
+      const rings = geoToLatLngs(f.geometry).flatMap(splitRing);
       if (!rings.length) return [];
       const visited = [...visitedCountries].some((c) => countryMatches(name, c));
       return [{ name, visited, rings }];
