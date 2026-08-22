@@ -460,15 +460,21 @@ async def geocode(request: GeocodeRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Provide at least one non-empty location.")
     results = await run_in_threadpool(geocoder.geocode_many, locations)
     states: dict[str, dict[str, Any]] = {}
+    countries: dict[str, dict[str, Any]] = {}
     for r in results:
         name = r.get("state_name")
         geo = r.get("state_geojson")
         if name and geo:
             states[name] = geo
+        cname = r.get("country_name")
+        cgeo = r.get("country_geojson")
+        if cname and cgeo:
+            countries[cname] = cgeo
     return {
         "results": results,
         "feasibility": [],
         "states": [{"name": n, "geojson": g} for n, g in states.items()],
+        "countries": [{"name": n, "geojson": g} for n, g in countries.items()],
     }
 
 
@@ -485,12 +491,19 @@ async def _geocode_stops(stops: list[GeocodeStop]) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     pending: list[tuple[int, str]] = []  # (index into `resolved`, query)
     states: dict[str, dict[str, Any]] = {}  # state name → boundary polygon (deduped)
+    countries: dict[str, dict[str, Any]] = {}  # country name → boundary polygon (deduped)
 
     def _collect_states(result: dict[str, Any]) -> None:
         name = result.get("state_name")
         geo = result.get("state_geojson")
         if name and geo:
             states[name] = geo
+
+    def _collect_countries(result: dict[str, Any]) -> None:
+        name = result.get("country_name")
+        geo = result.get("country_geojson")
+        if name and geo:
+            countries[name] = geo
 
     for i, s in enumerate(stops):
         order = s.order or i + 1
@@ -519,9 +532,12 @@ async def _geocode_stops(stops: list[GeocodeStop]) -> dict[str, Any]:
                 "geojson": (info or {}).get("geojson"),
                 "state_name": info.get("state_name"),
                 "state_geojson": info.get("state_geojson"),
+                "country_name": info.get("country_name"),
+                "country_geojson": info.get("country_geojson"),
                 "error": None,
             }
             _collect_states(result)
+            _collect_countries(result)
             results.append(result)
             continue
         if not exact:
@@ -559,9 +575,12 @@ async def _geocode_stops(stops: list[GeocodeStop]) -> dict[str, Any]:
                 "geojson": r.get("geojson"),
                 "state_name": r.get("state_name"),
                 "state_geojson": r.get("state_geojson"),
+                "country_name": r.get("country_name"),
+                "country_geojson": r.get("country_geojson"),
                 "error": r["error"],
             }
             _collect_states(result)
+            _collect_countries(result)
             results.append(result)
 
     feasibility = feasibility_check(resolved)
@@ -583,4 +602,5 @@ async def _geocode_stops(stops: list[GeocodeStop]) -> dict[str, Any]:
         "results": results,
         "feasibility": feasibility,
         "states": [{"name": n, "geojson": g} for n, g in states.items()],
+        "countries": [{"name": n, "geojson": g} for n, g in countries.items()],
     }

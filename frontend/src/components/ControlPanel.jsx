@@ -10,6 +10,18 @@ function chronologicalSort(list) {
   });
 }
 
+// Great-circle distance in km between two coordinates (cheap, no dependency).
+function haversine(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
 export default function ControlPanel({
   stops,
   viewCount,
@@ -18,6 +30,8 @@ export default function ControlPanel({
   onToggleLines,
   showStates,
   onToggleStates,
+  showCountries,
+  onToggleCountries,
   onRecenter,
   onGeocode,
   flaggedCount,
@@ -32,6 +46,37 @@ export default function ControlPanel({
     [stops],
   );
   const canExport = positioned.length > 0;
+
+  // Trip summary: countries visited, rough distance, date span, category mix.
+  const summary = useMemo(() => {
+    const countries = new Set(
+      stops.map((s) => s.country_name).filter(Boolean),
+    );
+    const dates = stops
+      .map((s) => s.start_date || s.end_date)
+      .filter(Boolean)
+      .sort();
+    let distKm = 0;
+    for (let i = 1; i < positioned.length; i++) {
+      const a = positioned[i - 1];
+      const b = positioned[i];
+      distKm += haversine(a.lat, a.lng, b.lat, b.lng);
+    }
+    const byCat = { Past: 0, Current: 0, Upcoming: 0 };
+    stops.forEach((s) => {
+      if (byCat[s.category] != null) byCat[s.category] += 1;
+    });
+    return {
+      countries: countries.size,
+      distKm,
+      first: dates[0] || "",
+      last: dates[dates.length - 1] || "",
+      byCat,
+    };
+  }, [stops, positioned]);
+
+  const fmtKm = (km) =>
+    km >= 1000 ? `${(km / 1000).toFixed(1)}k km` : `${Math.round(km).toLocaleString()} km`;
 
   const download = (name, content, type) => {
     const blob = new Blob([content], { type });
@@ -86,8 +131,10 @@ export default function ControlPanel({
 <style>
   html,body,#map{height:100%;margin:0;font-family:system-ui,-apple-system,sans-serif}
   .legend{position:absolute;z-index:1000;bottom:18px;left:18px;background:rgba(255,255,255,.93);padding:8px 12px;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.25);font-size:13px}
-  .marker{width:26px;height:26px;border-radius:50%;background:#2563eb;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.45)}
-  .marker-amb{background:#d97706}
+  .marker{position:relative;width:34px;height:42px;background:#2563eb;clip-path:path('M17 1C8.2 1 1 8.2 1 17c0 12.2 16 24 16 24s16-11.8 16-24C33 8.2 25.8 1 17 1z');color:#2563eb}
+  .marker::after{content:'';position:absolute;left:50%;top:7.5px;width:18px;height:18px;margin-left:-9px;border-radius:50%;background:#fff}
+  .marker span{position:absolute;left:50%;top:7px;transform:translateX(-50%);font-size:11px;font-weight:700;z-index:1}
+  .marker-amb{background:#d97706;color:#d97706}
   .pop-title{font-weight:700;margin-bottom:2px}
   .pop-meta{color:#475569}
   .pop-warn{margin-top:4px;background:#fffbeb;border:1px solid #fcd34d;border-radius:4px;padding:2px 6px;color:#92400e;font-size:11px}
@@ -104,7 +151,7 @@ function esc(s){var d=document.createElement("div");d.textContent=s;return d.inn
 var latlngs=STOPS.map(function(s){return[s.lat,s.lng]});
 if(latlngs.length>1)L.polyline(latlngs,{color:"#2563eb",weight:3,opacity:.85}).addTo(map);
 STOPS.forEach(function(s){
-  var icon=L.divIcon({className:"",html:'<div class="marker'+(s.ambiguous?" marker-amb":"")+'">'+s.order+"</div>",iconSize:[26,26],iconAnchor:[13,13],popupAnchor:[0,-15]});
+  var icon=L.divIcon({className:"",html:'<div class="marker'+(s.ambiguous?" marker-amb":"")+'"><span>'+s.order+"</span></div>",iconSize:[34,42],iconAnchor:[17,42],popupAnchor:[0,-44]});
   var h='<div class="pop-title">'+s.order+". "+esc(s.location)+"</div>";
   if(s.exact_location&&s.exact_location!==s.location)h+='<div class="pop-meta">'+esc(s.exact_location)+"</div>";
   var dates=[s.start_date,s.end_date].filter(function(d){return d});
@@ -128,6 +175,36 @@ else map.setView([20,10],2);
 
   return (
     <div className="rounded-lg border border-slate-200 p-3">
+      {/* Trip summary */}
+      {stops.length > 0 && (
+        <div className="mb-3 grid grid-cols-2 gap-1.5 text-[11px]">
+          <div className="rounded-md bg-slate-50 px-2 py-1.5">
+            <div className="text-slate-400">Countries</div>
+            <div className="text-sm font-semibold text-slate-700">🌍 {summary.countries}</div>
+          </div>
+          <div className="rounded-md bg-slate-50 px-2 py-1.5">
+            <div className="text-slate-400">Route length</div>
+            <div className="text-sm font-semibold text-slate-700">📏 {fmtKm(summary.distKm)}</div>
+          </div>
+          {summary.first && (
+            <div className="rounded-md bg-slate-50 px-2 py-1.5">
+              <div className="text-slate-400">Journey</div>
+              <div className="truncate text-sm font-semibold text-slate-700">
+                {summary.first} → {summary.last}
+              </div>
+            </div>
+          )}
+          <div className="rounded-md bg-slate-50 px-2 py-1.5">
+            <div className="text-slate-400">Trips</div>
+            <div className="flex items-center gap-1 text-sm font-semibold text-slate-700">
+              <span className="text-slate-500">⬆️{summary.byCat.Upcoming}</span>
+              <span className="text-emerald-600">●{summary.byCat.Current}</span>
+              <span className="text-slate-400">⬇️{summary.byCat.Past}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Stats + source badge */}
       <div className="mb-2 flex items-center justify-between gap-2 text-xs text-slate-500">
         <span className="flex flex-wrap items-center gap-1.5">
@@ -191,6 +268,14 @@ else map.setView([20,10],2);
           }`}
         >
           🗺️ Color visited states: {showStates ? "on" : "off"}
+        </button>
+        <button
+          onClick={onToggleCountries}
+          className={`col-span-2 ${btnCls} ${
+            showCountries ? "border-teal-300 bg-teal-50 text-teal-700" : "opacity-70"
+          }`}
+        >
+          🌍 Light country colors: {showCountries ? "on" : "off"}
         </button>
         <button onClick={exportHtml} disabled={!canExport} className={`col-span-2 ${btnCls}`}>
           ⬇ Export interactive map (HTML)

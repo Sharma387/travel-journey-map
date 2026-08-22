@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { MapContainer, Marker, Polygon, Polyline, Popup, TileLayer, useMap } from "react-leaflet";
+import {
+  MapContainer,
+  Marker,
+  Polygon,
+  Polyline,
+  Popup,
+  TileLayer,
+  Tooltip,
+  useMap,
+} from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -17,6 +26,18 @@ function areaColors(key) {
   return {
     fill: `hsl(${hue}, 72%, 55%)`,
     stroke: `hsl(${hue}, 55%, 30%)`,
+  };
+}
+
+// Deterministic LIGHT pastel per country name (high lightness, low saturation)
+// so the more vivid state fills stay clearly visible on top of them.
+function countryColors(key) {
+  let h = 0;
+  for (const ch of key) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  const hue = ((h % 360) * 137.508) % 360;
+  return {
+    fill: `hsl(${hue}, 38%, 90%)`,
+    stroke: `hsl(${hue}, 30%, 78%)`,
   };
 }
 
@@ -47,13 +68,18 @@ function chronologicalSort(list) {
 }
 
 function numberedIcon(order, ambiguous) {
-  const bg = ambiguous ? "#d97706" : "#2563eb";
+  const color = ambiguous ? "#d97706" : "#2563eb";
+  const svg = `<svg width="34" height="42" viewBox="0 0 34 42" xmlns="http://www.w3.org/2000/svg">
+  <path d="M17 1C8.2 1 1 8.2 1 17c0 12.2 16 24 16 24s16-11.8 16-24C33 8.2 25.8 1 17 1z" fill="${color}" stroke="#ffffff" stroke-width="2"/>
+  <circle cx="17" cy="16.5" r="9" fill="#ffffff"/>
+  <text x="17" y="20.5" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" font-weight="700" fill="${color}">${order}</text>
+  </svg>`;
   return L.divIcon({
-    className: "",
-    html: `<div style="width:26px;height:26px;border-radius:9999px;background:${bg};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.45);">${order}</div>`,
-    iconSize: [26, 26],
-    iconAnchor: [13, 13],
-    popupAnchor: [0, -15],
+    className: "tj-pin",
+    html: svg,
+    iconSize: [34, 42],
+    iconAnchor: [17, 42], // tip of the pin
+    popupAnchor: [0, -44],
   });
 }
 
@@ -83,11 +109,28 @@ function MapController({ positioned, flySignal, focus }) {
   return null;
 }
 
-export default function MapView({ stops, showLines, flySignal, focus, showStates = true }) {
+export default function MapView({
+  stops,
+  showLines,
+  flySignal,
+  focus,
+  showStates = true,
+  showCountries = true,
+}) {
   const positioned = useMemo(
     () => chronologicalSort(stops.filter((s) => s.lat != null && s.lng != null)),
     [stops],
   );
+  const countries = useMemo(() => {
+    const map = new Map();
+    for (const s of positioned) {
+      const name = s.country_name;
+      const geo = s.country_geojson;
+      if (!name || !geo || map.has(name)) continue;
+      map.set(name, geo);
+    }
+    return [...map.entries()];
+  }, [positioned]);
   const areas = useMemo(() => {
     const map = new Map();
     for (const s of positioned) {
@@ -115,6 +158,28 @@ export default function MapView({ stops, showLines, flySignal, focus, showStates
           url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
           subdomains="abcd"
         />
+
+        {/* Country-level light fills — drawn beneath the state fills. */}
+        {showCountries &&
+          countries.flatMap(([name, geo]) => {
+            const rings = geoToLatLngs(geo);
+            if (!rings.length) return [];
+            const { fill, stroke } = countryColors(name);
+            return rings.map((latlngs, i) => (
+              <Polygon
+                key={`country-${name}-${i}`}
+                positions={latlngs}
+                pathOptions={{
+                  color: stroke,
+                  fillColor: fill,
+                  fillOpacity: 0.5,
+                  weight: 1,
+                  opacity: 0.7,
+                  renderer: canvasRenderer,
+                }}
+              />
+            ));
+          })}
 
         {/* State/region boundary fills — drawn beneath the route line + markers. */}
         {showStates &&
@@ -151,6 +216,11 @@ export default function MapView({ stops, showLines, flySignal, focus, showStates
             position={[s.lat, s.lng]}
             icon={numberedIcon(s.order, s.is_ambiguous)}
           >
+            <Tooltip direction="top" offset={[0, -34]} opacity={0.95} className="tj-tip">
+              <span className="text-xs font-medium">
+                {s.order}. {s.location}
+              </span>
+            </Tooltip>
             <Popup>
               <div className="min-w-[150px] text-xs">
                 <div className="font-bold">
@@ -184,8 +254,8 @@ export default function MapView({ stops, showLines, flySignal, focus, showStates
         <MapController positioned={positioned} flySignal={flySignal} focus={focus} />
       </MapContainer>
 
-      {/* Collapsible color legend for the visited-state fills. */}
-      {showStates && areas.length > 0 && (
+      {/* Collapsible color legend for the visited country/state fills. */}
+      {(showStates && areas.length > 0) || (showCountries && countries.length > 0) ? (
         <div className="absolute bottom-3 right-3 z-[1000] w-48 overflow-hidden rounded-lg border border-slate-200 bg-white/95 shadow-lg">
           <button
             onClick={() => setLegendOpen((v) => !v)}
@@ -196,19 +266,33 @@ export default function MapView({ stops, showLines, flySignal, focus, showStates
           </button>
           {legendOpen && (
             <div className="max-h-52 overflow-y-auto border-t border-slate-100 px-2 py-1.5">
-              {areas.map(([key]) => (
-                <div key={key} className="flex items-center gap-1.5 py-[3px] text-[11px] text-slate-600">
-                  <span
-                    className="h-2.5 w-2.5 shrink-0 rounded-[3px] border border-white shadow-sm"
-                    style={{ background: areaColors(key).fill }}
-                  />
-                  <span className="truncate">{key}</span>
-                </div>
-              ))}
+              {showCountries &&
+                countries.map(([name]) => (
+                  <div key={name} className="flex items-center gap-1.5 py-[3px] text-[11px] text-slate-600">
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-[3px] border border-white shadow-sm"
+                      style={{ background: countryColors(name).fill }}
+                    />
+                    <span className="truncate">{name}</span>
+                  </div>
+                ))}
+              {showCountries && countries.length > 0 && areas.length > 0 && (
+                <div className="my-1 border-t border-slate-100" />
+              )}
+              {showStates &&
+                areas.map(([key]) => (
+                  <div key={key} className="flex items-center gap-1.5 py-[3px] text-[11px] text-slate-600">
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-[3px] border border-white shadow-sm"
+                      style={{ background: areaColors(key).fill }}
+                    />
+                    <span className="truncate">{key}</span>
+                  </div>
+                ))}
             </div>
           )}
         </div>
-      )}
+      ) : null}
 
       {!positioned.length && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">

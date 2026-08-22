@@ -44,6 +44,7 @@ function mergeGeo(list, geo) {
   const byOrder = new Map((geo.results || []).map((r) => [r.order, r]));
   const byFeas = new Map((geo.feasibility || []).map((f) => [f.order, f]));
   const states = new Map((geo.states || []).map((st) => [st.name, st.geojson]));
+  const countries = new Map((geo.countries || []).map((c) => [c.name, c.geojson]));
   return list.map((s) => {
     let next = { ...s };
     const r = byOrder.get(s.order);
@@ -56,6 +57,10 @@ function mergeGeo(list, geo) {
         state_name: r.state_name ?? next.state_name,
         state_geojson:
           (r.state_name != null ? states.get(r.state_name) : undefined) ?? next.state_geojson,
+        country_name: r.country_name ?? next.country_name,
+        country_geojson:
+          (r.country_name != null ? countries.get(r.country_name) : undefined) ??
+          next.country_geojson,
         geocodeError: r.found ? null : r.error || "Not found",
       };
     }
@@ -98,8 +103,8 @@ function loadSavedItinerary() {
 
 // Persist the current itinerary to localStorage. The quota is small (≈5 MB), so
 // if the full payload (with boundary polygons) doesn't fit we retry: first
-// dropping per-city polygons but keeping state polygons (the state coloring is
-// what matters), then as a last resort markers only (a reload re-fetches).
+// dropping per-city polygons but keeping state + country polygons (the coloring
+// is what matters), then as a last resort markers only (a reload re-fetches).
 function saveItinerary(payload) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -118,7 +123,12 @@ function saveItinerary(payload) {
         const minimal = {
           ...payload,
           light: true,
-          stops: payload.stops.map((s) => ({ ...s, geojson: null, state_geojson: null })),
+          stops: payload.stops.map((s) => ({
+            ...s,
+            geojson: null,
+            state_geojson: null,
+            country_geojson: null,
+          })),
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(minimal));
         return "minimal";
@@ -141,6 +151,7 @@ export default function App() {
   const [source, setSource] = useState(saved?.source ?? null);
   const [showLines, setShowLines] = useState(saved?.showLines ?? true);
   const [showStates, setShowStates] = useState(saved?.showStates ?? saved?.showCities ?? true);
+  const [showCountries, setShowCountries] = useState(saved?.showCountries ?? true);
   const [flySignal, setFlySignal] = useState(0);
   const [focus, setFocus] = useState({ order: null, stamp: 0 });
   const [health, setHealth] = useState(null);
@@ -174,20 +185,20 @@ export default function App() {
   useEffect(() => {
     const t = setTimeout(() => {
       if (!stops.length && !source) return; // nothing meaningful to persist
-      saveItinerary({ stops, source, showLines, showStates, savedAt: Date.now() });
+      saveItinerary({ stops, source, showLines, showStates, showCountries, savedAt: Date.now() });
     }, 600);
     return () => clearTimeout(t);
-  }, [stops, source, showLines, showStates]);
+  }, [stops, source, showLines, showStates, showCountries]);
 
   // Flush the latest state synchronously on tab close, so edits made within the
   // debounce window aren't lost.
   const latestRef = useRef(null);
-  latestRef.current = { stops, source, showLines, showStates };
+  latestRef.current = { stops, source, showLines, showStates, showCountries };
   useEffect(() => {
     const flush = () => {
-      const { stops, source, showLines, showStates } = latestRef.current;
+      const { stops, source, showLines, showStates, showCountries } = latestRef.current;
       if (!stops.length && !source) return;
-      saveItinerary({ stops, source, showLines, showStates, savedAt: Date.now() });
+      saveItinerary({ stops, source, showLines, showStates, showCountries, savedAt: Date.now() });
     };
     window.addEventListener("beforeunload", flush);
     return () => window.removeEventListener("beforeunload", flush);
@@ -221,7 +232,7 @@ export default function App() {
       const total = list.length;
       let mutable = list.map((s) => ({ ...s }));
       const pending = mutable.filter(
-        (s) => s.lat == null || s.lng == null || !s.state_geojson,
+        (s) => s.lat == null || s.lng == null || !s.state_geojson || !s.country_geojson,
       );
       const done0 = total - pending.length;
       let done = done0;
@@ -360,18 +371,21 @@ export default function App() {
     }
   }
 
-  // Sessions restored from before the state-coloring feature (or saved in
-  // "minimal" quota mode) lack state polygons, so the map only shows tiny city
-  // fills until zoomed in. Re-fetch the state boundaries once on load — the
-  // backend is cached, so this only costs network on the first visit — and the
-  // whole visited states get colored right away.
+  // Sessions restored from before the state/country coloring features (or
+  // saved in "minimal" quota mode) lack state/country polygons, so the map
+  // only shows tiny city fills until zoomed in. Re-fetch the boundaries once
+  // on load — the backend is cached, so this only costs network on the first
+  // visit — and the whole visited states/countries get colored right away.
   useEffect(() => {
     if (repairedRef.current) return;
     repairedRef.current = true;
     const restored = savedRef.current;
     if (!restored) return;
     const needsRepair = restored.stops.some(
-      (s) => s.lat != null && s.lng != null && !s.state_geojson,
+      (s) =>
+        s.lat != null &&
+        s.lng != null &&
+        (!s.state_geojson || !s.country_geojson),
     );
     if (!needsRepair) return;
     const controller = new AbortController();
@@ -379,7 +393,7 @@ export default function App() {
     const seq = ++runSeq.current;
     setStatus({
       kind: "geocoding",
-      message: "Fetching state boundaries for saved stops…",
+      message: "Fetching boundaries for saved stops…",
       progress: { done: 0, total: restored.stops.length },
     });
     applyGeocode(restored.stops, {
@@ -392,14 +406,14 @@ export default function App() {
         setStops(next);
         setStatus({
           kind: "ready",
-          message: "State boundaries refreshed — visited states are now colored on the map.",
+          message: "Boundaries refreshed — visited states and countries are now colored on the map.",
         });
         setFlySignal((n) => n + 1);
       })
       .catch((err) => {
         if (seq !== runSeq.current) return;
         if (isAbortError(err)) {
-          setStatus({ kind: "ready", message: "State boundary refresh cancelled." });
+          setStatus({ kind: "ready", message: "Boundary refresh cancelled." });
         } else {
           setStatus({ kind: "error", message: err.message || String(err) });
         }
@@ -426,6 +440,8 @@ export default function App() {
             geojson: null,
             state_name: null,
             state_geojson: null,
+            country_name: null,
+            country_geojson: null,
             is_ambiguous: false,
             warning: null,
             candidates: [],
@@ -457,6 +473,8 @@ export default function App() {
           geojson: null,
           state_name: null,
           state_geojson: null,
+          country_name: null,
+          country_geojson: null,
           is_ambiguous: false,
           warning: null,
           candidates: [],
@@ -493,6 +511,8 @@ export default function App() {
             geojson: null,
             state_name: null,
             state_geojson: null,
+            country_name: null,
+            country_geojson: null,
             is_ambiguous: false,
             warning: null,
             candidates: [],
@@ -529,6 +549,8 @@ export default function App() {
               geojson: pick.geojson ?? null,
               state_name: pick.state_name ?? null,
               state_geojson: pick.state_geojson ?? null,
+              country_name: pick.country_name ?? null,
+              country_geojson: pick.country_geojson ?? null,
               is_ambiguous: false,
               warning: null,
               candidates: [],
@@ -608,6 +630,8 @@ export default function App() {
             onToggleLines={() => setShowLines((v) => !v)}
             showStates={showStates}
             onToggleStates={() => setShowStates((v) => !v)}
+            showCountries={showCountries}
+            onToggleCountries={() => setShowCountries((v) => !v)}
             onRecenter={() => setFlySignal((n) => n + 1)}
             onGeocode={handleRegeocode}
             flaggedCount={flaggedCount}
@@ -635,6 +659,7 @@ export default function App() {
             stops={visibleStops}
             showLines={showLines}
             showStates={showStates}
+            showCountries={showCountries}
             flySignal={flySignal}
             focus={focus}
           />

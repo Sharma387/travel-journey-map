@@ -177,6 +177,10 @@ class Geocoder:
                 conn.execute("ALTER TABLE geocodes ADD COLUMN state_name TEXT")
             if "state_query" not in cols:
                 conn.execute("ALTER TABLE geocodes ADD COLUMN state_query TEXT")
+            if "country_name" not in cols:
+                conn.execute("ALTER TABLE geocodes ADD COLUMN country_name TEXT")
+            if "country_query" not in cols:
+                conn.execute("ALTER TABLE geocodes ADD COLUMN country_query TEXT")
             conn.execute("DELETE FROM geocodes WHERE found = 1 AND geojson IS NULL")
 
     def _connect(self) -> sqlite3.Connection:
@@ -187,8 +191,8 @@ class Geocoder:
     def _cached(self, key: str) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT lat, lng, found, geojson, state_name, state_query "
-                "FROM geocodes WHERE key = ?",
+                "SELECT lat, lng, found, geojson, state_name, state_query, "
+                "country_name, country_query FROM geocodes WHERE key = ?",
                 (key,),
             ).fetchone()
         if row is None:
@@ -202,6 +206,7 @@ class Geocoder:
         return {
             "lat": row[0], "lng": row[1], "found": bool(row[2]),
             "geojson": geojson, "state_name": row[4], "state_query": row[5],
+            "country_name": row[6], "country_query": row[7],
         }
 
     def _store(
@@ -215,14 +220,16 @@ class Geocoder:
         geojson: dict[str, Any] | None = None,
         state_name: str | None = None,
         state_query: str | None = None,
+        country_name: str | None = None,
+        country_query: str | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO geocodes "
-                "(key, location, lat, lng, display_name, found, geojson, state_name, state_query) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(key, location, lat, lng, display_name, found, geojson, state_name, state_query, country_name, country_query) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (key, location, lat, lng, display_name, int(found), json.dumps(geojson),
-                 state_name, state_query),
+                 state_name, state_query, country_name, country_query),
             )
 
     def _wait_rate_limit(self) -> None:
@@ -249,14 +256,27 @@ class Geocoder:
         forward extra params like polygon_threshold. polygon_threshold keeps
         large state boundaries to hundreds of vertices.
         """
-        skey = _normalize(state_query)
-        cached = self._cached(skey)
+        return self._resolve_boundary(state_query, threshold=0.005)
+
+    def _resolve_country(self, country_query):
+        """Fetch (and cache) a simplified country boundary polygon.
+
+        Countries are much larger than states, so a bigger polygon_threshold
+        keeps even huge borders (USA, Russia, India) to a few hundred vertices.
+        """
+        return self._resolve_boundary(country_query, threshold=0.012)
+
+    def _resolve_boundary(self, query: str, threshold: float):
+        """Shared Nominatim boundary lookup with SQLite caching."""
+        qkey = _normalize(query)
+        cached = self._cached(qkey)
         if cached is not None:
             return cached.get("geojson") if cached["found"] else None
         self._wait_rate_limit()
         params = urllib.parse.urlencode({
-            "q": state_query, "format": "jsonv2", "limit": 1,
-            "polygon_geojson": 1, "polygon_threshold": 0.005, "accept-language": "en",
+            "q": query, "format": "jsonv2", "limit": 1,
+            "polygon_geojson": 1, "polygon_threshold": threshold,
+            "accept-language": "en",
         })
         url = f"https://nominatim.openstreetmap.org/search?{params}"
         req = urllib.request.Request(
@@ -268,14 +288,25 @@ class Geocoder:
         except Exception:
             return None
         if not data:
-            self._store(skey, state_query, None, None, None, False)
+            self._store(qkey, query, None, None, None, False)
             return None
         first = data[0]
         lat = float(first["lat"]) if first.get("lat") is not None else None
         lng = float(first["lon"]) if first.get("lon") is not None else None
         geojson = first.get("geojson")
-        self._store(skey, state_query, lat, lng, first.get("display_name"), bool(geojson), geojson)
+        self._store(qkey, query, lat, lng, first.get("display_name"), bool(geojson), geojson)
         return geojson
+
+    def _country_info(self, cached):
+        """(country_name, country_geojson) for a geocode row dict from _cached()."""
+        country_name = cached.get("country_name")
+        country_geojson = None
+        country_query = cached.get("country_query")
+        if country_query:
+            cc = self._cached(_normalize(country_query))
+            if cc is not None and cc["found"]:
+                country_geojson = cc.get("geojson")
+        return country_name, country_geojson
 
     # ------------------------------------------------------------------
     # Public API
@@ -289,18 +320,26 @@ class Geocoder:
         key = _normalize(location)
         cached = self._cached(key)
         if cached is not None and (cached.get("state_query") or not cached["found"]):
-            state_name, state_geojson = self._state_info(cached)
-            return {
-                "location": location,
-                "lat": cached["lat"],
-                "lng": cached["lng"],
-                "found": cached["found"],
-                "cached": True,
-                "geojson": cached.get("geojson"),
-                "state_name": state_name,
-                "state_geojson": state_geojson,
-                "error": None if cached["found"] else "Not found (cached).",
-            }
+            # Legacy rows predating the country feature have country_query
+            # as SQL NULL — treat as a miss so the fresh path backfills.
+            if cached["found"] and cached.get("country_query") is None:
+                pass  # fall through to the fresh path below
+            else:
+                state_name, state_geojson = self._state_info(cached)
+                country_name, country_geojson = self._country_info(cached)
+                return {
+                    "location": location,
+                    "lat": cached["lat"],
+                    "lng": cached["lng"],
+                    "found": cached["found"],
+                    "cached": True,
+                    "geojson": cached.get("geojson"),
+                    "state_name": state_name,
+                    "state_geojson": state_geojson,
+                    "country_name": country_name,
+                    "country_geojson": country_geojson,
+                    "error": None if cached["found"] else "Not found (cached).",
+                }
 
         self._wait_rate_limit()
         try:
@@ -344,12 +383,19 @@ class Geocoder:
             or addr.get("province") or addr.get("state_district")
         )
         country = addr.get("country") or ""
+        if country:
+            country_query = country
+            country_geojson = self._resolve_country(country_query)
+        else:
+            country_query = ""  # sentinel: fetched but no country
+            country_geojson = None
         state_query = (
             ", ".join(p for p in (state_name, country) if p) or None
         )
         state_geojson = self._resolve_state(state_query) if state_query else None
         self._store(key, location, place.latitude, place.longitude, place.address, True,
-                    geojson, state_name=state_name, state_query=state_query)
+                    geojson, state_name=state_name, state_query=state_query,
+                    country_name=country or None, country_query=country_query)
         return {
             "location": location,
             "lat": place.latitude,
@@ -359,6 +405,8 @@ class Geocoder:
             "geojson": geojson,
             "state_name": state_name,
             "state_geojson": state_geojson,
+            "country_name": country or None,
+            "country_geojson": country_geojson,
             "error": None,
         }
 
@@ -371,13 +419,15 @@ class Geocoder:
         backfills ``state_name`` / ``state_query`` / ``state_geojson``.
         """
         cached = self._cached(_normalize(location))
-        if cached is None or (cached["found"] and not cached.get("state_query")):
-            return None  # missing, not found, or legacy row without state data
+        if cached is None or (cached["found"] and cached.get("country_query") is None):
+            return None  # missing, not found, or legacy row without country data
         state_name, state_geojson = self._state_info(cached)
+        country_name, country_geojson = self._country_info(cached)
         return {
             "lat": cached["lat"], "lng": cached["lng"], "found": cached["found"],
             "geojson": cached.get("geojson"),
             "state_name": state_name, "state_geojson": state_geojson,
+            "country_name": country_name, "country_geojson": country_geojson,
         }
 
     def geocode_many(self, locations: list[str]) -> list[dict[str, Any]]:
@@ -510,6 +560,7 @@ class Geocoder:
                     "lng": place.longitude,
                     "geojson": (place.raw or {}).get("geojson"),
                     "state_name": state_name,
+                    "country_name": addr.get("country") or None,
                 }
             )
         if not results:

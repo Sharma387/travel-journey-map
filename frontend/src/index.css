@@ -11,3 +11,56 @@ body,
   width: 100%;
   background: #eef2f5;
 }
+
+/* Rounded, subtle Leaflet zoom controls + attribution to match the UI. */
+.leaflet-control-zoom {
+  border: none !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.14) !important;
+}
+.leaflet-control-zoom a {
+  color: #475569 !important;
+  border: none !important;
+  width: 30px !important;
+  height: 30px !important;
+  line-height: 30px !important;
+}
+.leaflet-control-zoom a:hover {
+  background: #f1f5f9 !important;
+}
+.leaflet-control-attribution {
+  background: rgba(255, 255, 255, 0.8) !important;
+  color: #64748b !important;
+  font-size: 10px !important;
+  border-radius: 6px 0 0 0;
+  padding: 2px 8px !important;
+}
+.leaflet-control-attribution a {
+  color: #475569 !important;
+}
+
+/* Map pins: gentle hover lift. */
+.tj-pin {
+  transition: transform 0.15s ease, filter 0.15s ease;
+  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.25));
+}
+.tj-pin:hover {
+  transform: translateY(-2px) scale(1.08);
+  filter: drop-shadow(0 3px 6px rgba(15, 23, 42, 0.35));
+  z-index: 1000 !important;
+}
+
+/* Leaflet tooltip on top of pins. */
+.leaflet-tooltip.tj-tip {
+  background: #0f172a;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.3);
+}
+.leaflet-tooltip.tj-tip::before {
+  display: none;
+}
