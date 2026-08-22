@@ -3,6 +3,7 @@ backend/.venv/
 backend/__pycache__/
 *.pyc
 backend/geocoding_cache.db*
+backend/app.db*
 
 # Node
 frontend/node_modules/

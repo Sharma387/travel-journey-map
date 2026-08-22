@@ -1,11 +1,14 @@
 """Travel Journey Map — FastAPI backend.
 
-Serves three lightweight endpoints:
+Serves these endpoints:
 
-    GET  /api/health           — service + local LLM reachability status
-    POST /api/parse-itinerary  — PDF / XLSX / CSV upload or raw text → ordered stops
-    POST /api/geocode          — batch geocode location strings (SQLite-cached)
-    POST /api/search-location  — search candidates with coordinates (manual map fixes)
+    GET  /api/health            — service + local LLM reachability status
+    POST /api/auth/login        — username/password → JWT
+    GET  /api/auth/me           — current user profile
+    POST /api/admin/...         — admin: create/manage users & families
+    POST /api/parse-itinerary   — PDF / XLSX / CSV upload or raw text → ordered stops
+    POST /api/geocode           — batch geocode location strings (SQLite-cached)
+    POST /api/search-location   — search candidates with coordinates (manual map fixes)
 
 Designed to run on modest hardware alongside a local Ollama / LM Studio instance.
 """
@@ -16,6 +19,7 @@ import json
 import logging
 import os
 import re
+from contextlib import asynccontextmanager
 from datetime import date
 from typing import Any
 
@@ -25,6 +29,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from auth_routes import router as auth_router
+from db import init_db
+from models import User
+from security import hash_password
 from geocoder import Geocoder
 from parsers import (
     _year_is_sane,
@@ -44,7 +52,41 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "llama3.2")
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120"))
 GEOCODE_DELAY = float(os.environ.get("GEOCODE_DELAY", "1.0"))
 
-app = FastAPI(title="Travel Journey Map API", version="1.0.0")
+# Admin bootstrap — override in production via env vars.
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+ADMIN_DISPLAY_NAME = os.environ.get("ADMIN_DISPLAY_NAME", "Administrator")
+
+
+def _seed_admin() -> None:
+    """Create the admin user on first startup (idempotent)."""
+    from db import SessionLocal
+
+    with SessionLocal() as db:
+        if db.query(User).filter(User.role == "admin").first() is None:
+            db.add(
+                User(
+                    username=ADMIN_USERNAME,
+                    display_name=ADMIN_DISPLAY_NAME,
+                    password_hash=hash_password(ADMIN_PASSWORD),
+                    role="admin",
+                )
+            )
+            db.commit()
+            log.warning(
+                "Seeded admin user %r — change ADMIN_PASSWORD before any real use.",
+                ADMIN_USERNAME,
+            )
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    _seed_admin()
+    yield
+
+
+app = FastAPI(title="Travel Journey Map API", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,6 +95,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth_router)
 
 geocoder = Geocoder(delay=GEOCODE_DELAY)
 
