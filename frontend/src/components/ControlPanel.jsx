@@ -275,7 +275,7 @@ else map.setView([20,10],2);
             showCountries ? "border-teal-300 bg-teal-50 text-teal-700" : "opacity-70"
           }`}
         >
-          🌍 Light country colors: {showCountries ? "on" : "off"}
+          🌍 Color the world: {showCountries ? "on" : "off"}
         </button>
         <button onClick={exportHtml} disabled={!canExport} className={`col-span-2 ${btnCls}`}>
           ⬇ Export interactive map (HTML)

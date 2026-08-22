@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   MapContainer,
   Marker,
+  Pane,
   Polygon,
   Polyline,
   Popup,
@@ -40,6 +41,51 @@ function countryColors(key) {
     fill: `hsl(${hue}, 55%, 78%)`,
     stroke: `hsl(${hue}, 45%, 64%)`,
   };
+}
+
+// The whole world gets a subtle shade too, so even unvisited countries are
+// lightly coloured. Visited countries (matched by name) get a slightly deeper
+// tint + stronger border so the journey still stands out.
+function worldColors(key, visited) {
+  let h = 0;
+  for (const ch of key) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  const hue = ((h % 360) * 137.508) % 360;
+  return visited
+    ? {
+        fill: `hsl(${hue}, 48%, 76%)`,
+        stroke: `hsl(${hue}, 40%, 58%)`,
+      }
+    : {
+        fill: `hsl(${hue}, 35%, 86%)`,
+        stroke: `hsl(${hue}, 25%, 78%)`,
+      };
+}
+
+// Match a stop's country name against a world-feature country name.
+function countryMatches(worldName, stopCountry) {
+  const a = (worldName || "").toLowerCase();
+  const b = (stopCountry || "").toLowerCase();
+  return (
+    a === b ||
+    (b && (a.includes(b) || b.includes(a)))
+  );
+}
+
+// Module-level cache so the world dataset is fetched once per page load.
+let worldDataPromise = null;
+function loadWorldData() {
+  if (!worldDataPromise) {
+    worldDataPromise = fetch("/countries-110m.geojson")
+      .then((r) => {
+        if (!r.ok) throw new Error(`world data ${r.status}`);
+        return r.json();
+      })
+      .catch((err) => {
+        worldDataPromise = null; // allow retry on next mount
+        throw err;
+      });
+  }
+  return worldDataPromise;
 }
 
 // Convert a Nominatim GeoJSON geometry to Leaflet polygon rings. Returns an
@@ -150,6 +196,42 @@ export default function MapView({
   }, [positioned]);
   const line = positioned.map((s) => [s.lat, s.lng]);
   const [legendOpen, setLegendOpen] = useState(true);
+  const [worldData, setWorldData] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadWorldData()
+      .then((data) => {
+        if (!cancelled) setWorldData(data);
+      })
+      .catch(() => {
+        /* world shading is optional — states/markers still render */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Country names actually visited (for the deeper tint + legend).
+  const visitedCountries = useMemo(() => {
+    const set = new Set();
+    for (const s of positioned) {
+      if (s.country_name) set.add(s.country_name);
+    }
+    return set;
+  }, [positioned]);
+
+  // All ~177 world countries as [name, rings] pairs (drawn beneath everything).
+  const worldCountries = useMemo(() => {
+    if (!worldData || !Array.isArray(worldData.features)) return [];
+    return worldData.features.flatMap((f) => {
+      const name = (f.properties || {}).name || (f.properties || {}).NAME || "";
+      const rings = geoToLatLngs(f.geometry);
+      if (!rings.length) return [];
+      const visited = [...visitedCountries].some((c) => countryMatches(name, c));
+      return [{ name, visited, rings }];
+    });
+  }, [worldData, visitedCountries]);
 
   return (
     <div className="relative h-full w-full">
@@ -159,6 +241,30 @@ export default function MapView({
           url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
           subdomains="abcd"
         />
+
+        {/* Whole-world country shading — every country gets a light colour,
+            visited ones slightly deeper. Drawn in a low z-index pane so it
+            always sits beneath the state fills regardless of load order. */}
+        <Pane name="world" style={{ zIndex: 250 }}>
+          {showCountries &&
+            worldCountries.flatMap(({ name, visited, rings }) => {
+              const { fill, stroke } = worldColors(name, visited);
+              return rings.map((latlngs, i) => (
+                <Polygon
+                  key={`world-${name}-${i}`}
+                  positions={latlngs}
+                  pathOptions={{
+                    color: stroke,
+                    fillColor: fill,
+                    fillOpacity: 0.55,
+                    weight: visited ? 1.6 : 0.7,
+                    opacity: 0.9,
+                    renderer: canvasRenderer,
+                  }}
+                />
+              ));
+            })}
+        </Pane>
 
         {/* Country-level light fills — drawn beneath the state fills. */}
         {showCountries &&
@@ -268,17 +374,24 @@ export default function MapView({
           </button>
           {legendOpen && (
             <div className="max-h-52 overflow-y-auto border-t border-slate-100 px-2 py-1.5">
+              {showCountries && worldCountries.length > 0 && (
+                <p className="pb-1 text-[10px] text-slate-400">
+                  🌍 All countries shaded · deeper = visited
+                </p>
+              )}
               {showCountries &&
-                countries.map(([name]) => (
-                  <div key={name} className="flex items-center gap-1.5 py-[3px] text-[11px] text-slate-600">
-                    <span
-                      className="h-2.5 w-2.5 shrink-0 rounded-[3px] border border-white shadow-sm"
-                      style={{ background: countryColors(name).fill }}
-                    />
-                    <span className="truncate">{name}</span>
-                  </div>
-                ))}
-              {showCountries && countries.length > 0 && areas.length > 0 && (
+                worldCountries
+                  .filter((c) => c.visited)
+                  .map(({ name }) => (
+                    <div key={name} className="flex items-center gap-1.5 py-[3px] text-[11px] text-slate-600">
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-[3px] border border-white shadow-sm"
+                        style={{ background: worldColors(name, true).fill }}
+                      />
+                      <span className="truncate">{name}</span>
+                    </div>
+                  ))}
+              {showStates && areas.length > 0 && (
                 <div className="my-1 border-t border-slate-100" />
               )}
               {showStates &&
