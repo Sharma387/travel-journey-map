@@ -39,7 +39,7 @@ from extraction_provider import (
     query_omniroute_text,
     query_omniroute_vision,
 )
-from ocr import extract_image_text
+from ocr import extract_image_text, extract_pdf_ocr_text
 from db import init_db
 from models import User
 from security import hash_password
@@ -456,6 +456,18 @@ async def parse_itinerary(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     else:
         content = {"source_type": "text", "text": (text or "").strip(), "structured": None}
+
+    # Scanned PDF detection: if pdfplumber extracted little or no text, try
+    # rendering the PDF pages to images and OCR them with RapidOCR.
+    if (
+        content.get("source_type") == "pdf"
+        and len(content.get("text", "").strip()) < 50
+        and file is not None
+    ):
+        ocr_text = await run_in_threadpool(extract_pdf_ocr_text, data)
+        if ocr_text.strip():
+            log.info("Scanned PDF detected — OCR extracted %d characters.", len(ocr_text))
+            content["text"] = ocr_text
 
     stops: list[dict[str, Any]] = []
     llm_used = False
