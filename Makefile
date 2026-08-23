@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: install backend frontend dev clean
+.PHONY: install backend frontend dev run clean
 
 # Install backend (venv) and frontend (npm) dependencies.
 install:
@@ -23,6 +23,10 @@ dev:
 	$(MAKE) backend & \
 	$(MAKE) frontend & \
 	wait
+
+# One-command launcher: frees ports 8000/5173, starts both servers, opens the browser.
+run:
+	./run.sh
 
 # Remove all generated artefacts.
 clean:
