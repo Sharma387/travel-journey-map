@@ -8,6 +8,7 @@ Both providers share the same OpenAI chat-completions JSON shape, so a single
 from __future__ import annotations
 
 import base64
+import asyncio
 import logging
 import os
 
@@ -33,7 +34,11 @@ async def _chat_completion(
     api_key: str = "",
     max_tokens: int = 4096,
 ) -> str:
-    """OpenAI-compatible chat completion → the model's text content."""
+    """OpenAI-compatible chat completion → the model's text content.
+
+    Transient 5xx responses (the Omniroute gateway is occasionally flaky) are
+    retried once with a short backoff.
+    """
     url = f"{base_url}/chat/completions"
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -45,11 +50,21 @@ async def _chat_completion(
         "max_tokens": max_tokens,
         "stream": False,  # Omniroute defaults to SSE; require plain JSON
     }
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-    return data["choices"][0]["message"]["content"]
+
+    async def _once() -> str:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+        return data["choices"][0]["message"]["content"]
+
+    try:
+        return await _once()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code >= 500:
+            await asyncio.sleep(1.0)
+            return await _once()
+        raise
 
 
 # ---------------------------------------------------------------------------

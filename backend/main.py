@@ -506,8 +506,14 @@ async def parse_itinerary(
         if not stops:
             raise HTTPException(
                 status_code=422,
-                detail="Couldn't read the itinerary from the image (OCR found no text). "
-                "Try a clearer screenshot or paste the text directly.",
+                detail=(
+                    "The image was read but the itinerary couldn't be structured "
+                    "(OCR/AI extraction failed). Check that Omniroute or Ollama is "
+                    "running, then retry — or paste the itinerary text directly."
+                    if ocr_text.strip()
+                    else "Couldn't read any text from the image. "
+                    "Try a clearer screenshot or paste the text directly."
+                ),
             )
 
     # 3. Text / PDF / DOCX: the AI-first text path.
