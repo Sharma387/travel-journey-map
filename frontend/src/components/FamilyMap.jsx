@@ -8,6 +8,7 @@ import {
   Popup,
   TileLayer,
   Tooltip,
+  useMap,
 } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -41,11 +42,24 @@ function userPin(order, color) {
   });
 }
 
+// Fit the map to a set of stops (re-fits when the selection changes).
+function FitBounds({ stops, fitKey }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!stops.length) return;
+    map.fitBounds(stops.map((s) => [s.lat, s.lng]), { padding: [40, 40] });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitKey]);
+  return null;
+}
+
 export default function FamilyMap({ token }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [worldData, setWorldData] = useState(null);
   const [legendOpen, setLegendOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [selected, setSelected] = useState(null); // null = all | {memberId, journeyId}
 
   useEffect(() => {
     let cancelled = false;
@@ -74,18 +88,25 @@ export default function FamilyMap({ token }) {
   }, []);
 
   // Flatten every family member's stops, tagged with their user + colour.
+  // When a journey is selected, only that journey's stops are shown.
   const layers = useMemo(() => {
     if (!data) return [];
     return (data.members || [])
       .map((member) => {
+        let journeys = member.journeys || [];
+        if (selected) {
+          journeys = journeys.filter(
+            (j) => j.id === selected.journeyId && member.id === selected.memberId,
+          );
+        }
         const color = userColor(member.color_hue ?? 200);
-        const stops = (member.journeys || [])
+        const stops = journeys
           .flatMap((j) => (j.stops || []).map((s) => ({ ...s, journeyTitle: j.title })))
           .filter((s) => s.lat != null && s.lng != null);
         return { member, color, stops: chronologicalSort(stops) };
       })
       .filter((m) => m.stops.length > 0);
-  }, [data]);
+  }, [data, selected]);
 
   // Whole-world country shading (visited = any family stop in that country).
   const worldCountries = useMemo(() => {
@@ -107,6 +128,16 @@ export default function FamilyMap({ token }) {
     () => layers.flatMap((m) => m.stops),
     [layers],
   );
+
+  const selectedJourney = useMemo(() => {
+    if (!data || !selected) return null;
+    const member = (data.members || []).find((m) => m.id === selected.memberId);
+    return member?.journeys?.find((j) => j.id === selected.journeyId) || null;
+  }, [data, selected]);
+
+  const fitKey = selected
+    ? `j${selected.memberId}-${selected.journeyId}`
+    : `all-${allStops.length}`;
 
   if (error) {
     return (
@@ -142,6 +173,7 @@ export default function FamilyMap({ token }) {
           url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
           subdomains="abcd"
         />
+        <FitBounds stops={allStops} fitKey={fitKey} />
 
         {/* World shading */}
         <Pane name="world" style={{ zIndex: 250 }}>
@@ -230,13 +262,77 @@ export default function FamilyMap({ token }) {
         ))}
       </MapContainer>
 
+      {/* Journey list sidebar — click a journey to highlight it on the map. */}
+      <div className="absolute left-3 top-3 z-[1000] w-56 overflow-hidden rounded-lg border border-slate-200 bg-white/95 shadow-lg">
+        <button
+          onClick={() => setSidebarOpen((v) => !v)}
+          className="flex w-full items-center justify-between px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+        >
+          <span>🧳 Family journeys</span>
+          <span className="text-slate-400">{sidebarOpen ? "▾" : "▸"}</span>
+        </button>
+        {sidebarOpen && (
+          <div className="max-h-60 overflow-y-auto border-t border-slate-100 px-1.5 py-1.5">
+            <button
+              onClick={() => setSelected(null)}
+              className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[11px] font-medium ${
+                !selected ? "bg-blue-50 text-blue-700" : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              👨‍👩‍👧 Show all journeys
+            </button>
+            {(data.members || []).map((m) => (
+              <div key={m.id} className="mt-1.5">
+                <div className="flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ background: userColor(m.color_hue ?? 200) }}
+                  />
+                  {m.display_name}
+                </div>
+                {(m.journeys || []).length === 0 && (
+                  <p className="px-2 py-0.5 text-[10px] text-slate-300">No journeys</p>
+                )}
+                {(m.journeys || []).map((j) => {
+                  const active =
+                    selected?.memberId === m.id && selected?.journeyId === j.id;
+                  const stopCount = (j.stops || []).filter(
+                    (s) => s.lat != null && s.lng != null,
+                  ).length;
+                  return (
+                    <button
+                      key={j.id}
+                      onClick={() => setSelected({ memberId: m.id, journeyId: j.id })}
+                      className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[11px] ${
+                        active
+                          ? "bg-blue-50 font-medium text-blue-700"
+                          : "text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      <span className="truncate">{j.title || "Untitled journey"}</span>
+                      <span className="ml-auto shrink-0 text-[10px] text-slate-400">
+                        {stopCount}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Legend: who is which colour */}
       <div className="absolute bottom-3 right-3 z-[1000] w-48 overflow-hidden rounded-lg border border-slate-200 bg-white/95 shadow-lg">
         <button
           onClick={() => setLegendOpen((v) => !v)}
           className="flex w-full items-center justify-between px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
         >
-          <span>👨‍👩‍👧 Family · {data.family?.name}</span>
+          <span>
+            {selectedJourney
+              ? `📍 ${selectedJourney.title || "Untitled"}`
+              : `👨‍👩‍👧 Family · ${data.family?.name}`}
+          </span>
           <span className="text-slate-400">{legendOpen ? "▾" : "▸"}</span>
         </button>
         {legendOpen && (
