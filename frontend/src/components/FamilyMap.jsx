@@ -108,21 +108,43 @@ export default function FamilyMap({ token }) {
       .filter((m) => m.stops.length > 0);
   }, [data, selected]);
 
-  // Whole-world country shading (visited = any family stop in that country).
+  // Whole-world country shading. Visited countries get a deeper tint; a
+  // country visited by exactly ONE member is filled with that member's colour
+  // (so "who visited which country" is visible). Shared countries stay neutral.
   const worldCountries = useMemo(() => {
     if (!worldData || !Array.isArray(worldData.features)) return [];
-    const visitedSet = new Set(
-      layers.flatMap((m) => m.stops.map((s) => s.country_name).filter(Boolean)),
-    );
+    // country name -> set of member ids that visited it
+    const countryMembers = new Map();
+    for (const layer of layers) {
+      for (const s of layer.stops) {
+        if (!s.country_name) continue;
+        if (!countryMembers.has(s.country_name)) {
+          countryMembers.set(s.country_name, new Set());
+        }
+        countryMembers.get(s.country_name).add(layer.member.id);
+      }
+    }
+    const membersById = new Map((data?.members || []).map((m) => [m.id, m]));
     return worldData.features.flatMap((f) => {
       const name = (f.properties || {}).name || (f.properties || {}).NAME || "";
       if (!name || name === "Antarctica") return [];
       const rings = geoToLatLngs(f.geometry).flatMap(splitRing);
       if (!rings.length) return [];
-      const visited = [...visitedSet].some((c) => countryMatches(name, c));
-      return [{ name, visited, rings }];
+      // match the world feature against stops' country names (fuzzy ok)
+      let visitedIds = null;
+      for (const [countryName, ids] of countryMembers) {
+        if (countryMatches(name, countryName)) {
+          visitedIds = ids;
+          break;
+        }
+      }
+      const visited = !!visitedIds && visitedIds.size > 0;
+      const soleMemberId =
+        visitedIds && visitedIds.size === 1 ? [...visitedIds][0] : null;
+      const member = soleMemberId ? membersById.get(soleMemberId) : null;
+      return [{ name, visited, member, rings }];
     });
-  }, [worldData, layers]);
+  }, [worldData, layers, data]);
 
   const allStops = useMemo(
     () => layers.flatMap((m) => m.stops),
@@ -177,17 +199,20 @@ export default function FamilyMap({ token }) {
 
         {/* World shading */}
         <Pane name="world" style={{ zIndex: 250 }}>
-          {worldCountries.map(({ name, visited, rings }) => {
+          {worldCountries.map(({ name, visited, member, rings }) => {
             const { fill, stroke } = worldColors(name, visited);
+            const owned = member ? userColor(member.color_hue ?? 200) : null;
             return rings.map((latlngs, i) => (
               <Polygon
                 key={`world-${name}-${i}`}
                 positions={latlngs}
                 pathOptions={{
-                  color: stroke,
-                  fillColor: fill,
-                  fillOpacity: 0.55,
-                  weight: visited ? 1.6 : 0.7,
+                  color: member
+                    ? userColor(member.color_hue ?? 200, "stroke")
+                    : stroke,
+                  fillColor: member ? owned : fill,
+                  fillOpacity: member ? 0.4 : 0.55,
+                  weight: member ? 1.8 : visited ? 1.6 : 0.7,
                   opacity: 0.9,
                   renderer: canvasRenderer,
                 }}
