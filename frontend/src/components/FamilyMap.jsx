@@ -42,6 +42,22 @@ function userPin(order, color) {
   });
 }
 
+// Great-circle distance in km (cheap haversine, no dependency).
+function haversine(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function fmtKm(km) {
+  return km >= 1000 ? `${(km / 1000).toFixed(1)}k km` : `${Math.round(km).toLocaleString()} km`;
+}
+
 // Fit the map to a set of stops (re-fits when the selection changes).
 function FitBounds({ stops, fitKey }) {
   const map = useMap();
@@ -59,6 +75,7 @@ export default function FamilyMap({ token }) {
   const [worldData, setWorldData] = useState(null);
   const [legendOpen, setLegendOpen] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [statsOpen, setStatsOpen] = useState(true);
   const [selected, setSelected] = useState(null); // null = all | {memberId, journeyId}
 
   useEffect(() => {
@@ -160,6 +177,51 @@ export default function FamilyMap({ token }) {
   const fitKey = selected
     ? `j${selected.memberId}-${selected.journeyId}`
     : `all-${allStops.length}`;
+
+  // Family-level stats (computed from the full data, not filtered layers).
+  const stats = useMemo(() => {
+    if (!data) return null;
+    const members = data.members || [];
+    let totalDist = 0;
+    const allDates = [];
+    const allCountries = new Set();
+    let totalStops = 0;
+    let totalJourneys = 0;
+    for (const m of members) {
+      const jlist = m.journeys || [];
+      totalJourneys += jlist.length;
+      for (const j of jlist) {
+        const stops = j.stops || [];
+        for (const s of stops) {
+          if (s.country_name) allCountries.add(s.country_name);
+          if (s.start_date || s.end_date) allDates.push(s.start_date || s.end_date);
+          if (s.lat != null && s.lng != null) {
+            totalStops++;
+          }
+        }
+        // route distance per journey
+        const positioned = stops.filter((x) => x.lat != null);
+        for (let i = 1; i < positioned.length; i++) {
+          totalDist += haversine(
+            positioned[i - 1].lat,
+            positioned[i - 1].lng,
+            positioned[i].lat,
+            positioned[i].lng,
+          );
+        }
+      }
+    }
+    allDates.sort();
+    return {
+      totalStops,
+      totalJourneys,
+      countries: allCountries.size,
+      distance: totalDist,
+      firstDate: allDates[0] || null,
+      lastDate: allDates[allDates.length - 1] || null,
+      memberCount: members.length,
+    };
+  }, [data]);
 
   if (error) {
     return (
@@ -298,6 +360,51 @@ export default function FamilyMap({ token }) {
         </button>
         {sidebarOpen && (
           <div className="max-h-60 overflow-y-auto border-t border-slate-100 px-1.5 py-1.5">
+            {/* Family-level stats */}
+            {stats && (
+              <div className="mb-2">
+                <button
+                  onClick={() => setStatsOpen((v) => !v)}
+                  className="flex w-full items-center justify-between rounded-md px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  <span>📊 Family stats</span>
+                  <span className="text-slate-400">{statsOpen ? "▾" : "▸"}</span>
+                </button>
+                {statsOpen && (
+                  <div className="mt-1 grid grid-cols-2 gap-1 px-2 text-[11px]">
+                    <div className="rounded-md bg-slate-50 px-1.5 py-1">
+                      <div className="text-[10px] text-slate-400">Members</div>
+                      <div className="font-semibold text-slate-700">👥 {stats.memberCount}</div>
+                    </div>
+                    <div className="rounded-md bg-slate-50 px-1.5 py-1">
+                      <div className="text-[10px] text-slate-400">Journeys</div>
+                      <div className="font-semibold text-slate-700">🧳 {stats.totalJourneys}</div>
+                    </div>
+                    <div className="rounded-md bg-slate-50 px-1.5 py-1">
+                      <div className="text-[10px] text-slate-400">Countries</div>
+                      <div className="font-semibold text-slate-700">🌍 {stats.countries}</div>
+                    </div>
+                    <div className="rounded-md bg-slate-50 px-1.5 py-1">
+                      <div className="text-[10px] text-slate-400">Stops</div>
+                      <div className="font-semibold text-slate-700">📍 {stats.totalStops}</div>
+                    </div>
+                    <div className="col-span-2 rounded-md bg-slate-50 px-1.5 py-1">
+                      <div className="text-[10px] text-slate-400">Route distance</div>
+                      <div className="font-semibold text-slate-700">📏 {fmtKm(stats.distance)}</div>
+                    </div>
+                    {stats.firstDate && (
+                      <div className="col-span-2 rounded-md bg-slate-50 px-1.5 py-1">
+                        <div className="text-[10px] text-slate-400">Journey span</div>
+                        <div className="font-semibold text-slate-700">
+                          📅 {stats.firstDate} → {stats.lastDate}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             <button
               onClick={() => setSelected(null)}
               className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[11px] font-medium ${
