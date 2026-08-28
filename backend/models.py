@@ -62,6 +62,9 @@ class Journey(Base):
     llm_used: Mapped[bool] = mapped_column(Boolean, default=False)
     llm_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
     engine: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    share_token: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, unique=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     owner: Mapped[User] = relationship(back_populates="journeys")

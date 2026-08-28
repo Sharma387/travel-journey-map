@@ -59,4 +59,13 @@ def _migrate() -> None:
         }
         if "color_hue" not in cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN color_hue INTEGER"))
+        # journeys table: share_token
+        jcols = {
+            row[1]
+            for row in conn.execute(
+                text("SELECT * FROM pragma_table_info('journeys')")
+            )
+        }
+        if "share_token" not in jcols:
+            conn.execute(text("ALTER TABLE journeys ADD COLUMN share_token VARCHAR(64)"))
         conn.commit()

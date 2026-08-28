@@ -1,12 +1,47 @@
 import { useState } from "react";
+import { shareJourney, unshareJourney } from "../api";
 
 function fmtDate(d) {
   if (!d) return "";
   return d;
 }
 
-export default function JourneyLibrary({ journeys, onOpen, onNew, onDelete, busy }) {
+export default function JourneyLibrary({ journeys, onOpen, onNew, onDelete, busy, token }) {
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [shareState, setShareState] = useState({}); // journeyId -> "sharing" | "copied"
+  const [copied, setCopied] = useState({}); // journeyId -> true after copy
+
+  const handleShare = async (id) => {
+    setShareState((s) => ({ ...s, [id]: "sharing" }));
+    try {
+      const res = await shareJourney(id, token);
+      const url = `${window.location.origin}${res.url}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        setCopied((c) => ({ ...c, [id]: true }));
+        setTimeout(() => setCopied((c) => ({ ...c, [id]: false })), 2500);
+      } catch {
+        /* clipboard may be blocked; still show the link */
+      }
+      setShareState((s) => ({ ...s, [id]: "done" }));
+    } catch (err) {
+      setShareState((s) => ({ ...s, [id]: "error" }));
+    } finally {
+      setTimeout(() => setShareState((s) => ({ ...s, [id]: "" })), 2500);
+    }
+  };
+
+  const handleUnshare = async (id) => {
+    try {
+      await unshareJourney(id, token);
+      setShareState((s) => ({ ...s, [id]: "unshared" }));
+      setTimeout(() => setShareState((s) => ({ ...s, [id]: "" })), 2500);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const st = (id) => shareState[id] || "";
 
   return (
     <div className="mx-auto w-full max-w-3xl p-4 lg:p-6">
@@ -74,6 +109,26 @@ export default function JourneyLibrary({ journeys, onOpen, onNew, onDelete, busy
               >
                 Open
               </button>
+              {j.share_token ? (
+                <button
+                  onClick={() => handleUnshare(j.id)}
+                  className="rounded-md border border-emerald-200 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50"
+                >
+                  {st(j.id) === "unshared" ? "Unshared" : "🔗 Shared"}
+                </button>
+              ) : (
+                <button
+                  onClick={() => handleShare(j.id)}
+                  disabled={busy}
+                  className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                >
+                  {st(j.id) === "sharing"
+                    ? "Sharing…"
+                    : copied[j.id]
+                      ? "✅ Link copied"
+                      : "🔗 Share"}
+                </button>
+              )}
               <button
                 onClick={() => {
                   if (confirmDelete === j.id) {

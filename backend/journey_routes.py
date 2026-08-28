@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -84,6 +85,7 @@ def journey_summary(journey: Journey, stops: list[Stop]) -> dict:
         "id": journey.id,
         "title": journey.title,
         "stop_count": len(stops),
+        "share_token": journey.share_token,
         "first_date": dates[0] if dates else None,
         "last_date": dates[-1] if dates else None,
         "created_at": journey.created_at.isoformat() if journey.created_at else None,
@@ -259,3 +261,55 @@ def delete_journey(
     journey = _get_owned_journey(db, journey_id, user)
     db.delete(journey)
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Share / public links
+# ---------------------------------------------------------------------------
+@router.post("/journeys/{journey_id}/share")
+def share_journey(
+    journey_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Generate (or return) a public share token for this journey."""
+    journey = _get_owned_journey(db, journey_id, user)
+    if not journey.share_token:
+        journey.share_token = secrets.token_urlsafe(16)
+        db.commit()
+        db.refresh(journey)
+    return {
+        "token": journey.share_token,
+        "url": f"/share/{journey.share_token}",
+    }
+
+
+@router.delete("/journeys/{journey_id}/share", status_code=204)
+def unshare_journey(
+    journey_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Revoke the public share link for this journey."""
+    journey = _get_owned_journey(db, journey_id, user)
+    journey.share_token = None
+    db.commit()
+
+
+@router.get("/public/journeys/{token}")
+def public_journey(
+    token: str,
+    db: Session = Depends(get_db),
+):
+    """Public access to a shared journey (no auth required)."""
+    journey = db.scalar(
+        select(Journey).where(Journey.share_token == token)
+    )
+    if journey is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Journey not found or the share link has expired.",
+        )
+    owner = db.get(User, journey.owner_id)
+    stops = _journey_stops(db, journey.id)
+    return journey_out(journey, owner.display_name if owner else "", stops)

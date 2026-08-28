@@ -8,6 +8,7 @@ import JourneyLibrary from "./components/JourneyLibrary";
 import AdminPage from "./components/AdminPage";
 import FamilyMap from "./components/FamilyMap";
 import ReviewPanel from "./components/ReviewPanel";
+import SharedJourneyView from "./components/SharedJourneyView";
 import {
   geocodeStops,
   parseItinerary,
@@ -155,6 +156,13 @@ function saveItinerary(payload) {
 }
 
 export default function App() {
+  // Public share links: /share/{token} renders a read-only journey view (no
+  // login). Detect it from the URL on load.
+  const [shareToken, setShareToken] = useState(() => {
+    const m = window.location.pathname.match(/^\/share\/([A-Za-z0-9_-]+)/);
+    return m ? m[1] : null;
+  });
+
   // Session (login) — stored in localStorage so a refresh doesn't log out.
   const [session, setSession] = useState(() => {
     try {
@@ -770,6 +778,11 @@ export default function App() {
   const flaggedCount = stops.filter((s) => s.is_ambiguous).length;
   const busy = status.kind === "parsing" || status.kind === "geocoding";
 
+  // Public share link — render the read-only journey view without login.
+  if (shareToken) {
+    return <SharedJourneyView shareToken={shareToken} />;
+  }
+
   if (!session) {
     return (
       <div className="flex h-full flex-col bg-slate-50">
@@ -858,6 +871,7 @@ export default function App() {
           onNew={handleNewJourney}
           onDelete={handleDeleteJourney}
           busy={busy}
+          token={session.token}
         />
       )}
 

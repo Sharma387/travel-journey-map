@@ -132,6 +132,24 @@ export async function fetchFamilyJourneys(token) {
   return request("/api/journeys/family", { headers: authHeaders(token) });
 }
 
+export async function shareJourney(id, token) {
+  return request(`/api/journeys/${id}/share`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export async function unshareJourney(id, token) {
+  return request(`/api/journeys/${id}/share`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+}
+
+export async function fetchPublicJourney(shareToken) {
+  return request(`/api/public/journeys/${shareToken}`);
+}
+
 // ---------------------------------------------------------------------------
 // Admin
 // ---------------------------------------------------------------------------
