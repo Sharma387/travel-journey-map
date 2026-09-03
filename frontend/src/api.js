@@ -150,6 +150,18 @@ export async function fetchPublicJourney(shareToken) {
   return request(`/api/public/journeys/${shareToken}`);
 }
 
+export async function exportJourneys(token) {
+  return request("/api/journeys/export", { headers: authHeaders(token) });
+}
+
+export async function importJourneys(data, token) {
+  return request("/api/journeys/import", {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(data),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Admin
 // ---------------------------------------------------------------------------

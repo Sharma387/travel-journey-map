@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -12,8 +13,8 @@ from sqlalchemy.orm import Session
 from auth_routes import auto_color_hue
 from db import get_db
 from models import Family, Journey, Stop, User
-from schemas import JourneyCreate, JourneyOut
-from security import get_current_user
+from schemas import JourneyCreate, JourneyOut, StopIn
+from security import get_current_user, require_admin
 
 router = APIRouter(prefix="/api", tags=["journeys"])
 
@@ -210,6 +211,72 @@ def family_journeys(
     }
 
 
+# ---------------------------------------------------------------------------
+# Backup / restore (defined BEFORE {journey_id} routes so the literal
+# "export" / "import" segments are matched, not parsed as an int id)
+# ---------------------------------------------------------------------------
+@router.get("/journeys/export")
+def export_journeys(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Export all of the current user's journeys as a downloadable JSON blob."""
+    journeys = db.scalars(
+        select(Journey)
+        .where(Journey.owner_id == user.id)
+        .order_by(Journey.created_at)
+    ).all()
+    return {
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "version": 1,
+        "user": {"username": user.username, "display_name": user.display_name},
+        "journeys": [
+            journey_out(j, user.display_name, _journey_stops(db, j.id))
+            for j in journeys
+        ],
+    }
+
+
+@router.post("/journeys/import")
+def import_journeys(
+    body: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Import journeys from a previously-exported JSON blob."""
+    raw_journeys = body.get("journeys") if isinstance(body, dict) else body
+    if not raw_journeys or not isinstance(raw_journeys, list):
+        raise HTTPException(400, "No journeys found in the import data.")
+
+    created = []
+    for raw in raw_journeys:
+        if not isinstance(raw, dict) or not raw.get("title"):
+            continue
+        schema = JourneyCreate(
+            title=raw.get("title", "Imported journey"),
+            source_type=raw.get("source_type"),
+            llm_used=raw.get("llm_used", False),
+            llm_model=raw.get("llm_model"),
+            engine=raw.get("engine"),
+            stops=[StopIn(**s) for s in (raw.get("stops") or [])],
+        )
+        journey = Journey(
+            owner_id=user.id,
+            title=(schema.title or "Imported journey")[:200],
+            source_type=schema.source_type,
+            llm_used=schema.llm_used,
+            llm_model=schema.llm_model,
+            engine=schema.engine,
+        )
+        db.add(journey)
+        db.flush()
+        _apply_stops(db, journey.id, schema.stops)
+        created.append(journey.id)
+
+    db.commit()
+    return {"imported": len(created), "journey_ids": created}
+
+
 @router.get("/journeys/{journey_id}", response_model=JourneyOut)
 def get_journey(
     journey_id: int,
@@ -313,3 +380,36 @@ def public_journey(
     owner = db.get(User, journey.owner_id)
     stops = _journey_stops(db, journey.id)
     return journey_out(journey, owner.display_name if owner else "", stops)
+
+
+# ---------------------------------------------------------------------------
+# Admin: export all users' journeys
+# ---------------------------------------------------------------------------
+@router.get("/admin/export")
+def admin_export_all(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Admin-only: export every journey from every user (full backup)."""
+    users = db.scalars(select(User).order_by(User.display_name)).all()
+    out_users = []
+    for u in users:
+        journeys = db.scalars(
+            select(Journey).where(Journey.owner_id == u.id).order_by(Journey.created_at)
+        ).all()
+        if not journeys:
+            continue
+        out_users.append(
+            {
+                "user": {"username": u.username, "display_name": u.display_name},
+                "journeys": [
+                    journey_out(j, u.display_name, _journey_stops(db, j.id))
+                    for j in journeys
+                ],
+            }
+        )
+    return {
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "version": 1,
+        "users": out_users,
+    }

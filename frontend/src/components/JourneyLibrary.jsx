@@ -1,15 +1,66 @@
-import { useState } from "react";
-import { shareJourney, unshareJourney } from "../api";
+import { useRef, useState } from "react";
+import {
+  shareJourney,
+  unshareJourney,
+  fetchJourneys,
+  exportJourneys,
+  importJourneys,
+} from "../api";
 
 function fmtDate(d) {
   if (!d) return "";
   return d;
 }
 
-export default function JourneyLibrary({ journeys, onOpen, onNew, onDelete, busy, token }) {
+export default function JourneyLibrary({
+  journeys,
+  onOpen,
+  onNew,
+  onDelete,
+  busy,
+  token,
+  onRefresh,
+}) {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [shareState, setShareState] = useState({}); // journeyId -> "sharing" | "copied"
   const [copied, setCopied] = useState({}); // journeyId -> true after copy
+  const [importBusy, setImportBusy] = useState(false);
+  const fileRef = useRef(null);
+
+  const handleExport = async () => {
+    try {
+      const data = await exportJourneys(token);
+      const blob = new Blob([JSON.stringify(data, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `travel-journey-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) {
+      alert(`Export failed: ${err.message}`);
+    }
+  };
+
+  const handleImportFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportBusy(true);
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const result = await importJourneys(data, token);
+      alert(`Imported ${result.imported} journey(s).`);
+      onRefresh?.();
+    } catch (err) {
+      alert(`Import failed: ${err.message}`);
+    } finally {
+      setImportBusy(false);
+      e.target.value = "";
+    }
+  };
 
   const handleShare = async (id) => {
     setShareState((s) => ({ ...s, [id]: "sharing" }));
@@ -56,12 +107,34 @@ export default function JourneyLibrary({ journeys, onOpen, onNew, onDelete, busy
               : "No journeys yet — create your first one"}
           </p>
         </div>
-        <button
-          onClick={onNew}
-          className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-        >
-          + New journey
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleExport}
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+          >
+            ⬇ Backup
+          </button>
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={importBusy}
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+          >
+            {importBusy ? "Importing…" : "⬆ Restore"}
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={handleImportFile}
+          />
+          <button
+            onClick={onNew}
+            className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          >
+            + New journey
+          </button>
+        </div>
       </div>
 
       {journeys.length === 0 ? (

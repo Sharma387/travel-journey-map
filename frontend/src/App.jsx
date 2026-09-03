@@ -872,6 +872,7 @@ export default function App() {
           onDelete={handleDeleteJourney}
           busy={busy}
           token={session.token}
+          onRefresh={() => fetchJourneys(session.token).then(setJourneys).catch(() => {})}
         />
       )}
 
